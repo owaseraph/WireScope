@@ -1,4 +1,6 @@
+
 #include "wirescope/decoder.hpp"
+#include "wirescope/tcp_tracker.hpp"
 
 #include <pcap/pcap.h>
 
@@ -6,12 +8,16 @@
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
-#include <sstream>
+#include <span>
 #include <string>
 #include <type_traits>
 #include <variant>
 
 namespace {
+
+// 
+// Protocol name helpers
+// 
 
 [[nodiscard]] const char* ether_type_name(std::uint16_t ether_type) {
     switch (ether_type) {
@@ -50,6 +56,32 @@ namespace {
     }
 }
 
+
+// 
+// TCP timestamp conversion
+// 
+
+// libpcap's offline-open API returns timestamps in microsecond
+// precision by default.
+[[nodiscard]] std::uint64_t timestamp_to_microseconds(
+    const pcap_pkthdr& header
+) noexcept {
+    const auto seconds =
+        static_cast<std::uint64_t>(header.ts.tv_sec);
+
+    const auto microseconds =
+        static_cast<std::uint64_t>(header.ts.tv_usec);
+
+    constexpr std::uint64_t micros_per_second = 1'000'000U;
+
+    return seconds * micros_per_second + microseconds;
+}
+
+
+// 
+// Packet printing
+// 
+
 void print_transport(const wirescope::TransportInfo& transport) {
     std::visit(
         [](const auto& info) {
@@ -61,9 +93,11 @@ void print_transport(const wirescope::TransportInfo& transport) {
                           << info.destination_port
                           << "  seq=" << info.sequence_number
                           << "  ack=" << info.acknowledgement_number
-                          << "  flags=" << wirescope::format_tcp_flags(info.flags)
+                          << "  flags="
+                          << wirescope::format_tcp_flags(info.flags)
                           << "  window=" << info.window_size
                           << "  header=" << info.header_length << " B\n";
+
             } else if constexpr (std::is_same_v<T, wirescope::UdpInfo>) {
                 std::cout << "    UDP       "
                           << info.source_port << " -> "
@@ -190,7 +224,100 @@ void print_packet(
     }
 }
 
+
+// 
+// TCP connection table
+// 
+
+void print_connections(
+    const wirescope::TcpConnectionTracker& tracker
+) {
+    std::cout << "\n========================================\n";
+    std::cout << "          TCP CONNECTIONS\n";
+    std::cout << "========================================\n";
+
+    if (tracker.size() == 0U) {
+        std::cout << "No TCP connections observed.\n";
+        return;
+    }
+
+    for (const auto& connection : tracker.connections()) {
+        const std::uint64_t duration_us =
+            connection.last_seen_us - connection.first_seen_us;
+
+        std::cout << "\n#" << connection.id << '\n';
+
+        std::cout << "    A           "
+                  << connection.key.first.address << ':'
+                  << connection.key.first.port << '\n';
+
+        std::cout << "    B           "
+                  << connection.key.second.address << ':'
+                  << connection.key.second.port << '\n';
+
+        std::cout << "    State       "
+                  << wirescope::tcp_connection_state_name(
+                      connection.state
+                  ) << '\n';
+
+        if (connection.initiator.has_value()) {
+            std::cout << "    Initiator   "
+                      << connection.initiator->address << ':'
+                      << connection.initiator->port << '\n';
+        } else {
+            std::cout << "    Initiator   unknown (midstream capture)\n";
+        }
+
+        std::cout << "    Packets     "
+                  << connection.packet_count << '\n';
+
+        std::cout << "    Bytes       "
+                  << connection.captured_bytes << '\n';
+
+        std::cout << "    A -> B      "
+                  << connection.packets_a_to_b
+                  << " packets / "
+                  << connection.bytes_a_to_b
+                  << " bytes\n";
+
+        std::cout << "    B -> A      "
+                  << connection.packets_b_to_a
+                  << " packets / "
+                  << connection.bytes_b_to_a
+                  << " bytes\n";
+
+        std::cout << "    SYN         "
+                  << connection.syn_packets
+                  << "  SYN-ACK="
+                  << connection.syn_ack_packets << '\n';
+
+        std::cout << "    ACK         "
+                  << connection.ack_packets
+                  << "  FIN="
+                  << connection.fin_packets
+                  << "  RST="
+                  << connection.rst_packets << '\n';
+
+        std::cout << "    Duration    "
+                  << duration_us / 1000U << '.'
+                  << std::setw(3) << std::setfill('0')
+                  << duration_us % 1000U
+                  << std::setfill(' ')
+                  << " ms\n";
+    }
+
+    std::cout << "\n========================================\n";
+    std::cout << "Total TCP connection generations: "
+              << tracker.size() << '\n';
+    std::cout << "========================================\n";
+}
+
 } // namespace
+
+
+// 
+// Application entry point
+// 
 
 int main(int argc, char* argv[]) {
     if (argc != 2) {
@@ -199,10 +326,16 @@ int main(int argc, char* argv[]) {
     }
 
     char error_buffer[PCAP_ERRBUF_SIZE]{};
-    pcap_t* capture = pcap_open_offline(argv[1], error_buffer);
+
+    pcap_t* capture = pcap_open_offline(
+        argv[1],
+        error_buffer
+    );
 
     if (capture == nullptr) {
-        std::cerr << "Could not open capture: " << error_buffer << '\n';
+        std::cerr << "Could not open capture: "
+                  << error_buffer << '\n';
+
         return 1;
     }
 
@@ -210,40 +343,77 @@ int main(int argc, char* argv[]) {
         std::cerr
             << "Unsupported capture link type. "
             << "This version expects Ethernet (DLT_EN10MB).\n";
+
         pcap_close(capture);
         return 1;
     }
 
+    // Create our TCP connection tracker.
+    wirescope::TcpConnectionTracker tcp_tracker;
+
     std::size_t packet_count = 0U;
+
     pcap_pkthdr* header = nullptr;
     const u_char* packet_data = nullptr;
+
     int status = 0;
 
-    while ((status = pcap_next_ex(capture, &header, &packet_data)) == 1) {
+    // Read packets from the capture.
+    while (
+        (status = pcap_next_ex(
+            capture,
+            &header,
+            &packet_data
+        )) == 1
+    ) {
         ++packet_count;
 
-        const auto* bytes = reinterpret_cast<const std::uint8_t*>(packet_data);
+        const auto* bytes =
+            reinterpret_cast<const std::uint8_t*>(packet_data);
+
         const std::span<const std::uint8_t> frame(
             bytes,
             static_cast<std::size_t>(header->caplen)
         );
 
-        const wirescope::PacketSummary summary = wirescope::decode_ethernet(
-            frame,
-            static_cast<std::size_t>(header->len)
+        // Decode the packet.
+        const wirescope::PacketSummary summary =
+            wirescope::decode_ethernet(
+                frame,
+                static_cast<std::size_t>(header->len)
+            );
+
+        // Feed the decoded packet into the TCP tracker.
+        tcp_tracker.observe(
+            summary,
+            timestamp_to_microseconds(*header)
         );
 
-        print_packet(packet_count, *header, summary);
+        // Display individual packet information.
+        print_packet(
+            packet_count,
+            *header,
+            summary
+        );
     }
 
     if (status == -1) {
-        std::cerr << "Error reading capture: " << pcap_geterr(capture) << '\n';
+        std::cerr << "Error reading capture: "
+                  << pcap_geterr(capture)
+                  << '\n';
+
         pcap_close(capture);
         return 1;
     }
 
     pcap_close(capture);
 
-    std::cout << "\nRead " << packet_count << " packet(s).\n";
+    // Display aggregated TCP connection information.
+    print_connections(tcp_tracker);
+
+    std::cout << "\nRead "
+              << packet_count
+              << " packet(s).\n";
+
     return 0;
 }
