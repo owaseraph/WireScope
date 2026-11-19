@@ -1,3 +1,4 @@
+
 #include "wirescope/decoder.hpp"
 #include "wirescope/tcp_tracker.hpp"
 
@@ -13,6 +14,15 @@
 #include <variant>
 
 namespace {
+
+// TCP connection idle timeout.
+//
+// A connection with no observed packets for five minutes is removed
+// from active tracking. Its historical statistics remain available.
+constexpr std::uint64_t tcp_idle_timeout_seconds = 300U;
+
+constexpr std::uint64_t tcp_idle_timeout_us =
+    tcp_idle_timeout_seconds * 1'000'000U;
 
 // Protocol name helpers
 
@@ -254,6 +264,13 @@ void print_connections(
                       connection.state_b
                   ) << '\n';
 
+        // Distinguish historical records from active connections.
+        std::cout << "    Tracking    "
+                  << (connection.expired
+                      ? "EXPIRED (idle timeout)"
+                      : "INDEXED")
+                  << '\n';
+
         if (connection.initiator.has_value()) {
             std::cout << "    Initiator   "
                       << connection.initiator->address << ':'
@@ -300,9 +317,19 @@ void print_connections(
                   << " ms\n";
     }
 
+    const std::size_t indexed_count = tracker.active_size();
+    const std::size_t expired_count = tracker.size() - indexed_count;
+
     std::cout << "\n========================================\n";
-    std::cout << "Total TCP connection generations: "
+    std::cout << "Total connection generations: "
               << tracker.size() << '\n';
+
+    std::cout << "Currently indexed: "
+              << indexed_count << '\n';
+
+    std::cout << "Expired by idle timeout: "
+              << expired_count << '\n';
+
     std::cout << "========================================\n";
 }
 
@@ -367,6 +394,31 @@ int main(int argc, char* argv[]) {
             static_cast<std::size_t>(header->caplen)
         );
 
+        // Convert the packet timestamp once and use the same value
+        // for expiration and connection tracking.
+        const std::uint64_t packet_timestamp_us =
+            timestamp_to_microseconds(*header);
+
+        // Expire idle connections BEFORE observing this packet.
+        //
+        // This ensures that a packet arriving after the idle timeout
+        // creates a new generation instead of updating the old one.
+        const std::size_t expired_connections =
+            tcp_tracker.expire_idle(
+                packet_timestamp_us,
+                tcp_idle_timeout_us
+            );
+
+        if (expired_connections > 0U) {
+            std::cout << "\n[TCP] Expired "
+                      << expired_connections
+                      << " idle connection(s) before packet #"
+                      << packet_count
+                      << " (idle timeout: "
+                      << tcp_idle_timeout_seconds
+                      << " seconds).\n";
+        }
+
         // Decode the packet.
         const wirescope::PacketSummary summary =
             wirescope::decode_ethernet(
@@ -377,7 +429,7 @@ int main(int argc, char* argv[]) {
         // Feed the decoded packet into the TCP tracker.
         tcp_tracker.observe(
             summary,
-            timestamp_to_microseconds(*header)
+            packet_timestamp_us
         );
 
         // Display individual packet information.
