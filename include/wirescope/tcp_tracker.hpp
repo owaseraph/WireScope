@@ -13,7 +13,9 @@
 
 namespace wirescope {
 
+// 
 // TCP endpoint
+// 
 
 struct TcpEndpoint {
     std::string address;
@@ -34,7 +36,9 @@ struct TcpEndpoint {
 };
 
 
+// 
 // Bidirectional connection identifier
+// 
 
 struct TcpConnectionKey {
     TcpEndpoint first;
@@ -55,34 +59,50 @@ struct TcpConnectionKey {
 };
 
 
-// Connection lifecycle
+// 
+// Individual TCP endpoint state
+// 
 
-enum class TcpConnectionState {
+enum class TcpEndpointState {
+    Unknown,
+    Midstream,
+
     SynSent,
     SynReceived,
     Established,
-    Midstream,
-    FinWait,
+
+    FinWait1,
+    FinWait2,
+    CloseWait,
     Closing,
+    LastAck,
+    TimeWait,
+    Closed,
+
     Reset
 };
 
 
+// 
 // Tracked TCP connection
+// 
 
 struct TcpConnection {
-    // Unique identifier for this observed connection generation.
+
+    // Unique connection generation identifier.
     std::uint64_t id{};
 
     // Canonically ordered endpoints.
     TcpConnectionKey key;
 
-    // Known only when we observe the initial SYN.
+    // Original SYN sender, when observed or inferred.
     std::optional<TcpEndpoint> initiator;
 
-    TcpConnectionState state{TcpConnectionState::Midstream};
+    // Each endpoint maintains its own TCP state.
+    TcpEndpointState state_a{TcpEndpointState::Unknown};
+    TcpEndpointState state_b{TcpEndpointState::Unknown};
 
-    // Capture timestamps, measured in microseconds.
+    // Capture timestamps in microseconds.
     std::uint64_t first_seen_us{};
     std::uint64_t last_seen_us{};
 
@@ -104,52 +124,82 @@ struct TcpConnection {
     std::uint64_t fin_packets{};
     std::uint64_t rst_packets{};
 
-    // Tracks which direction has sent FIN.
+    // FIN tracking.
     bool fin_from_a{};
     bool fin_from_b{};
+
+    // Sequence number immediately following each observed FIN.
+    // FIN consumes one sequence number.
+    std::uint32_t fin_end_sequence_a{};
+    std::uint32_t fin_end_sequence_b{};
+
+    // Whether the opposite endpoint acknowledged each FIN.
+    bool fin_acked_by_a{};
+    bool fin_acked_by_b{};
+
+    // True when this generation has been removed from active tracking.
+    bool expired{};
 };
 
 
+// 
 // TCP connection tracker
+// 
 
 class TcpConnectionTracker {
 public:
 
-    // Observe a decoded packet and update its TCP connection.
-    // timestamp_microseconds comes from the PCAP timestamp.
+    // Observe a decoded TCP packet.
     void observe(
         const PacketSummary& packet,
         std::uint64_t timestamp_microseconds
     );
 
-    // Access all tracked connection generations.
-    [[nodiscard]] const std::vector<TcpConnection>& connections() const noexcept;
+    // Expire connections that have been idle for at least
+    // idle_timeout_microseconds.
+    //
+    // Expired records remain available through connections(),
+    // but are removed from the active connection index.
+    //
+    // Returns the number of connections expired.
+    [[nodiscard]] std::size_t expire_idle(
+        std::uint64_t current_time_us,
+        std::uint64_t idle_timeout_microseconds
+    );
 
-    // Number of tracked connection generations.
+    // Access all connection generations, including expired ones.
+    [[nodiscard]] const std::vector<TcpConnection>&
+    connections() const noexcept;
+
+    // Total historical connection generations.
     [[nodiscard]] std::size_t size() const noexcept;
 
-    // Remove all tracked connections and reset the ID counter.
+    // Number of currently indexed connections.
+    [[nodiscard]] std::size_t active_size() const noexcept;
+
+    // Clear all connection records and reset identifiers.
     void clear() noexcept;
 
 private:
 
-    // All observed connections, including completed/reset ones.
+    // All observed connection generations.
     std::vector<TcpConnection> connections_;
 
-    // Maps a canonical endpoint pair to its current connection.
-    // The value is an index into connections_.
+    // Active connection lookup.
+    // Value is an index into connections_.
     std::map<TcpConnectionKey, std::size_t> active_connections_;
 
-    // Monotonically increasing connection identifier.
+    // Monotonically increasing identifier.
     std::uint64_t next_connection_id_{1U};
 };
 
 
+// 
+// State formatting
+// 
 
-// Utility
-
-[[nodiscard]] const char* tcp_connection_state_name(
-    TcpConnectionState state
+[[nodiscard]] const char* tcp_endpoint_state_name(
+    TcpEndpointState state
 ) noexcept;
 
 } // namespace wirescope

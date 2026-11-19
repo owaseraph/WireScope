@@ -1,4 +1,3 @@
-
 #include "wirescope/decoder.hpp"
 #include "wirescope/tcp_tracker.hpp"
 
@@ -15,9 +14,7 @@
 
 namespace {
 
-// 
 // Protocol name helpers
-// 
 
 [[nodiscard]] const char* ether_type_name(std::uint16_t ether_type) {
     switch (ether_type) {
@@ -56,10 +53,7 @@ namespace {
     }
 }
 
-
-// 
 // TCP timestamp conversion
-// 
 
 // libpcap's offline-open API returns timestamps in microsecond
 // precision by default.
@@ -77,10 +71,7 @@ namespace {
     return seconds * micros_per_second + microseconds;
 }
 
-
-// 
 // Packet printing
-// 
 
 void print_transport(const wirescope::TransportInfo& transport) {
     std::visit(
@@ -224,10 +215,7 @@ void print_packet(
     }
 }
 
-
-// 
 // TCP connection table
-// 
 
 void print_connections(
     const wirescope::TcpConnectionTracker& tracker
@@ -255,9 +243,15 @@ void print_connections(
                   << connection.key.second.address << ':'
                   << connection.key.second.port << '\n';
 
-        std::cout << "    State       "
-                  << wirescope::tcp_connection_state_name(
-                      connection.state
+        // Each endpoint has its own TCP state.
+        std::cout << "    State A     "
+                  << wirescope::tcp_endpoint_state_name(
+                      connection.state_a
+                  ) << '\n';
+
+        std::cout << "    State B     "
+                  << wirescope::tcp_endpoint_state_name(
+                      connection.state_b
                   ) << '\n';
 
         if (connection.initiator.has_value()) {
@@ -314,10 +308,7 @@ void print_connections(
 
 } // namespace
 
-
-// 
 // Application entry point
-// 
 
 int main(int argc, char* argv[]) {
     if (argc != 2) {
