@@ -7,17 +7,13 @@ project(WireScope
     LANGUAGES CXX
 )
 
-# 
 # Language configuration
-# 
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# 
 # Compiler warnings
-# 
 
 function(wirescope_enable_warnings target)
     target_compile_options(${target} PRIVATE
@@ -29,9 +25,7 @@ function(wirescope_enable_warnings target)
     )
 endfunction()
 
-# 
 # Core packet decoder
-# 
 
 add_library(wirescope_decoder
     src/decoder.cpp
@@ -45,9 +39,7 @@ target_include_directories(wirescope_decoder
 
 wirescope_enable_warnings(wirescope_decoder)
 
-# 
 # TCP connection tracker
-# 
 
 add_library(wirescope_tcp_tracker
     src/tcp_tracker.cpp
@@ -61,13 +53,12 @@ target_link_libraries(wirescope_tcp_tracker
 
 wirescope_enable_warnings(wirescope_tcp_tracker)
 
-# 
 # Unit tests
-# 
 
 enable_testing()
 
 # Packet decoder tests
+
 add_executable(decoder_tests
     tests/decoder_tests.cpp
 )
@@ -84,6 +75,7 @@ add_test(
 )
 
 # TCP tracker tests
+
 add_executable(tcp_tracker_tests
     tests/tcp_tracker_tests.cpp
 )
@@ -99,7 +91,7 @@ add_test(
     COMMAND tcp_tracker_tests
 )
 
-# PCAP command-line application
+# Capture-file and live-capture application
 
 find_path(PCAP_INCLUDE_DIR
     NAMES pcap/pcap.h
@@ -110,6 +102,8 @@ find_library(PCAP_LIBRARY
 )
 
 if(PCAP_INCLUDE_DIR AND PCAP_LIBRARY)
+
+    find_package(Threads REQUIRED)
 
     add_executable(wirescope
         src/main.cpp
@@ -124,14 +118,15 @@ if(PCAP_INCLUDE_DIR AND PCAP_LIBRARY)
             WireScope::Decoder
             WireScope::TcpTracker
             ${PCAP_LIBRARY}
-    )   
+            Threads::Threads
+    )
 
     wirescope_enable_warnings(wirescope)
 
 else()
 
     message(STATUS
-        "libpcap not found: skipping the capture-file CLI"
+        "libpcap not found: skipping the capture-file and live-capture CLI"
     )
 
 endif()

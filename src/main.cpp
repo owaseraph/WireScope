@@ -5,6 +5,8 @@
 #include <pcap/pcap.h>
 
 #include <charconv>
+#include <chrono>
+#include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <iomanip>
@@ -14,40 +16,57 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <type_traits>
 #include <variant>
 
 namespace {
 
+//
+// Configuration
+//
+
+constexpr int live_snapshot_length = 262144;
+constexpr int live_read_timeout_ms = 250;
+
+constexpr std::chrono::milliseconds live_poll_interval{50};
+
+volatile std::sig_atomic_t stop_requested = 0;
+
+void handle_sigint(int) {
+    stop_requested = 1;
+}
+
+//
 // Command-line configuration
+//
 
 struct CommandLineOptions {
     std::string capture_path;
+    std::string interface_name;
 
-    // Default idle timeout: five minutes.
     std::string idle_timeout_label{"300s"};
 
     std::uint64_t idle_timeout_microseconds{
         300'000'000U
     };
 
+    bool promiscuous{};
     bool show_help{};
+    bool list_interfaces{};
 };
 
-// Parse a positive integer duration and convert it to microseconds.
 //
-// Supported suffixes:
-//   ms = milliseconds
-//   s  = seconds
-//   m  = minutes
-//   h  = hours
+// Idle timeout parsing
 //
-// No suffix means seconds.
+
 [[nodiscard]] bool parse_idle_timeout(
     std::string_view value,
     CommandLineOptions& options,
     std::string& error
 ) {
+    const std::string original_value{value};
+
     std::uint64_t multiplier = 1'000'000U;
 
     if (value.ends_with("ms")) {
@@ -111,19 +130,15 @@ struct CommandLineOptions {
     options.idle_timeout_microseconds =
         duration_value * multiplier;
 
-    options.idle_timeout_label = std::string(
-        value.data(),
-        value.size()
-    );
-
-    // Preserve the unit suffix in the displayed configuration.
-    // The numeric part was removed from the original view above,
-    // so the caller assigns the complete label after parsing.
+    options.idle_timeout_label = original_value;
 
     return true;
 }
 
-// Parse command-line arguments.
+//
+// Command-line argument parsing
+//
+
 [[nodiscard]] bool parse_arguments(
     int argc,
     char* argv[],
@@ -131,6 +146,8 @@ struct CommandLineOptions {
     std::string& error
 ) {
     bool timeout_option_seen = false;
+    bool interface_option_seen = false;
+    bool promiscuous_option_seen = false;
 
     for (int index = 1; index < argc; ++index) {
         const std::string_view argument{argv[index]};
@@ -140,9 +157,54 @@ struct CommandLineOptions {
             return true;
         }
 
-        // Form 1:
-        // --idle-timeout 300
-        // --idle-timeout 1ms
+        if (argument == "-L" || argument == "--list-interfaces") {
+            options.list_interfaces = true;
+            continue;
+        }
+
+        if (argument == "-i" || argument == "--interface") {
+            if (interface_option_seen) {
+                error = "--interface may only be specified once.";
+                return false;
+            }
+
+            if (
+                index + 1 >= argc ||
+                argv[index + 1][0] == '\0' ||
+                argv[index + 1][0] == '-'
+            ) {
+                error = "--interface requires an interface name.";
+                return false;
+            }
+
+            options.interface_name = argv[++index];
+            interface_option_seen = true;
+
+            continue;
+        }
+
+        if (
+            argument == "-p" ||
+            argument == "--promiscuous" ||
+            argument == "--no-promiscuous"
+        ) {
+            const bool enable =
+                argument != "--no-promiscuous";
+
+            if (
+                promiscuous_option_seen &&
+                options.promiscuous != enable
+            ) {
+                error = "conflicting promiscuous-mode options.";
+                return false;
+            }
+
+            options.promiscuous = enable;
+            promiscuous_option_seen = true;
+
+            continue;
+        }
+
         if (argument == "--idle-timeout") {
             if (timeout_option_seen) {
                 error = "--idle-timeout may only be specified once.";
@@ -160,15 +222,10 @@ struct CommandLineOptions {
                 return false;
             }
 
-            options.idle_timeout_label = std::string(duration);
             timeout_option_seen = true;
-
             continue;
         }
 
-        // Form 2:
-        // --idle-timeout=300
-        // --idle-timeout=1ms
         constexpr std::string_view timeout_prefix =
             "--idle-timeout=";
 
@@ -185,19 +242,15 @@ struct CommandLineOptions {
                 return false;
             }
 
-            options.idle_timeout_label = std::string(duration);
             timeout_option_seen = true;
-
             continue;
         }
 
-        // Reject unknown options.
         if (!argument.empty() && argument.front() == '-') {
             error = "unknown option: " + std::string(argument);
             return false;
         }
 
-        // Only one capture file is accepted.
         if (!options.capture_path.empty()) {
             error = "only one capture file may be specified.";
             return false;
@@ -206,25 +259,92 @@ struct CommandLineOptions {
         options.capture_path = std::string(argument);
     }
 
-    if (options.capture_path.empty()) {
-        error = "missing capture file path.";
+    if (options.list_interfaces) {
+        if (
+            !options.capture_path.empty() ||
+            !options.interface_name.empty() ||
+            timeout_option_seen ||
+            promiscuous_option_seen
+        ) {
+            error =
+                "--list-interfaces must be used without "
+                "other capture options.";
+
+            return false;
+        }
+
+        return true;
+    }
+
+    if (
+        !options.capture_path.empty() &&
+        !options.interface_name.empty()
+    ) {
+        error =
+            "choose either an offline capture file or "
+            "a live interface, not both.";
+
+        return false;
+    }
+
+    if (
+        options.capture_path.empty() &&
+        options.interface_name.empty()
+    ) {
+        error =
+            "missing input. Specify a PCAP file or "
+            "use --interface <name>.";
+
+        return false;
+    }
+
+    if (
+        promiscuous_option_seen &&
+        options.interface_name.empty()
+    ) {
+        error =
+            "promiscuous-mode options only apply to live capture.";
+
         return false;
     }
 
     return true;
 }
 
-// Print command-line usage information.
+//
+// Usage information
+//
+
 void print_usage(
     std::ostream& output,
     std::string_view program_name
 ) {
     output
-        << "Usage: " << program_name
-        << " [options] <capture.pcap>\n\n"
+        << "Usage:\n"
+        << "  " << program_name
+        << " [options] <capture.pcap>\n"
+
+        << "  " << program_name
+        << " [options] --interface <name>\n"
+
+        << "  " << program_name
+        << " --list-interfaces\n\n"
 
         << "Options:\n"
-        << "  --idle-timeout <duration>\n"
+
+        << "  -i, --interface <name>\n"
+        << "      Start live capture on the specified interface.\n\n"
+
+        << "  -L, --list-interfaces\n"
+        << "      List available capture interfaces.\n\n"
+
+        << "  -p, --promiscuous\n"
+        << "      Enable promiscuous mode for live capture.\n\n"
+
+        << "      --no-promiscuous\n"
+        << "      Disable promiscuous mode (default).\n\n"
+
+        << "      --idle-timeout <duration>\n"
         << "      Maximum TCP connection inactivity before expiration.\n"
         << "      Supported units: ms, s, m, h.\n"
         << "      A missing unit means seconds.\n"
@@ -234,22 +354,87 @@ void print_usage(
         << "      Display this help message.\n\n"
 
         << "Examples:\n"
+
         << "  " << program_name
         << " capture.pcap\n"
 
         << "  " << program_name
-        << " --idle-timeout 60s capture.pcap\n"
+        << " --list-interfaces\n"
 
         << "  " << program_name
-        << " --idle-timeout 5m capture.pcap\n"
+        << " --interface lo\n"
+
+        << "  " << program_name
+        << " --interface enp3s0 --promiscuous\n"
+
+        << "  " << program_name
+        << " --interface wlan0 --idle-timeout 60s\n"
 
         << "  " << program_name
         << " --idle-timeout 1ms capture.pcap\n";
 }
 
-// Protocol name helpers
+//
+// Interface enumeration
+//
 
-[[nodiscard]] const char* ether_type_name(std::uint16_t ether_type) {
+[[nodiscard]] int list_capture_interfaces() {
+    char error_buffer[PCAP_ERRBUF_SIZE]{};
+
+    pcap_if_t* devices = nullptr;
+
+    if (pcap_findalldevs(&devices, error_buffer) == -1) {
+        std::cerr << "Could not enumerate capture interfaces: "
+                  << error_buffer << '\n';
+
+        return 1;
+    }
+
+    if (devices == nullptr) {
+        std::cout << "No capture interfaces found.\n";
+        return 0;
+    }
+
+    std::cout << "Available capture interfaces:\n\n";
+
+    std::size_t index = 1U;
+
+    for (
+        const pcap_if_t* device = devices;
+        device != nullptr;
+        device = device->next
+    ) {
+        std::cout << "  " << index << ". "
+                  << device->name;
+
+        if (device->description != nullptr) {
+            std::cout << "\n     "
+                      << device->description;
+        }
+
+        if ((device->flags & PCAP_IF_LOOPBACK) != 0U) {
+            std::cout << "\n     [loopback]";
+        }
+
+        std::cout << '\n';
+
+        ++index;
+    }
+
+    pcap_freealldevs(devices);
+
+    std::cout << "\nUse --interface <name> to start capturing.\n";
+
+    return 0;
+}
+
+//
+// Protocol name helpers
+//
+
+[[nodiscard]] const char* ether_type_name(
+    std::uint16_t ether_type
+) {
     switch (ether_type) {
         case 0x0800U: return "IPv4";
         case 0x0806U: return "ARP";
@@ -260,7 +445,9 @@ void print_usage(
     }
 }
 
-[[nodiscard]] const char* ip_protocol_name(std::uint8_t protocol) {
+[[nodiscard]] const char* ip_protocol_name(
+    std::uint8_t protocol
+) {
     switch (protocol) {
         case 1U: return "ICMP";
         case 6U: return "TCP";
@@ -270,7 +457,9 @@ void print_usage(
     }
 }
 
-[[nodiscard]] const char* ipv6_header_name(std::uint8_t header) {
+[[nodiscard]] const char* ipv6_header_name(
+    std::uint8_t header
+) {
     switch (header) {
         case 0U: return "Hop-by-Hop Options";
         case 6U: return "TCP";
@@ -286,10 +475,10 @@ void print_usage(
     }
 }
 
-// TCP timestamp conversion
+//
+// Timestamp conversion
+//
 
-// libpcap's offline-open API returns timestamps in microsecond
-// precision by default.
 [[nodiscard]] std::uint64_t timestamp_to_microseconds(
     const pcap_pkthdr& header
 ) noexcept {
@@ -304,9 +493,29 @@ void print_usage(
     return seconds * micros_per_second + microseconds;
 }
 
-// Packet printing
+[[nodiscard]] std::uint64_t current_time_microseconds() noexcept {
+    const auto elapsed =
+        std::chrono::system_clock::now().time_since_epoch();
 
-void print_transport(const wirescope::TransportInfo& transport) {
+    const auto microseconds =
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            elapsed
+        ).count();
+
+    if (microseconds <= 0) {
+        return 0U;
+    }
+
+    return static_cast<std::uint64_t>(microseconds);
+}
+
+//
+// Packet printing
+//
+
+void print_transport(
+    const wirescope::TransportInfo& transport
+) {
     std::visit(
         [](const auto& info) {
             using T = std::decay_t<decltype(info)>;
@@ -370,7 +579,11 @@ void print_ipv6(const wirescope::Ipv6Info& ip) {
               << "  parsed_header_length=" << ip.header_length
               << " B\n";
 
-    for (std::size_t index = 0; index < ip.extension_headers.size(); ++index) {
+    for (
+        std::size_t index = 0;
+        index < ip.extension_headers.size();
+        ++index
+    ) {
         const auto& extension = ip.extension_headers[index];
 
         std::cout << "    IPv6 ext   #" << (index + 1U)
@@ -421,7 +634,11 @@ void print_packet(
                   << std::dec << std::setfill(' ') << ")\n";
     }
 
-    for (std::size_t index = 0; index < packet.vlan_tags.size(); ++index) {
+    for (
+        std::size_t index = 0;
+        index < packet.vlan_tags.size();
+        ++index
+    ) {
         const auto& tag = packet.vlan_tags[index];
 
         std::cout << "    VLAN      #" << (index + 1U)
@@ -448,7 +665,114 @@ void print_packet(
     }
 }
 
-// TCP connection table
+//
+// Shared packet-processing pipeline
+//
+
+struct CaptureContext {
+    wirescope::TcpConnectionTracker& tracker;
+    std::uint64_t idle_timeout_microseconds;
+    std::string idle_timeout_label;
+    std::size_t packet_count{};
+};
+
+void process_packet(
+    CaptureContext& context,
+    const pcap_pkthdr& header,
+    const u_char* packet_data
+) {
+    ++context.packet_count;
+
+    const auto* bytes =
+        reinterpret_cast<const std::uint8_t*>(packet_data);
+
+    const std::span<const std::uint8_t> frame(
+        bytes,
+        static_cast<std::size_t>(header.caplen)
+    );
+
+    const std::uint64_t packet_timestamp_us =
+        timestamp_to_microseconds(header);
+
+    const std::size_t expired_connections =
+        context.tracker.expire_idle(
+            packet_timestamp_us,
+            context.idle_timeout_microseconds
+        );
+
+    if (expired_connections > 0U) {
+        std::cout << "\n[TCP] Expired "
+                  << expired_connections
+                  << " idle connection(s) before packet #"
+                  << context.packet_count
+                  << " (idle timeout: "
+                  << context.idle_timeout_label
+                  << ").\n";
+    }
+
+    const wirescope::PacketSummary summary =
+        wirescope::decode_ethernet(
+            frame,
+            static_cast<std::size_t>(header.len)
+        );
+
+    context.tracker.observe(
+        summary,
+        packet_timestamp_us
+    );
+
+    print_packet(
+        context.packet_count,
+        header,
+        summary
+    );
+}
+
+void packet_callback(
+    u_char* user_data,
+    const pcap_pkthdr* header,
+    const u_char* packet_data
+) {
+    if (user_data == nullptr || header == nullptr) {
+        return;
+    }
+
+    auto* context =
+        reinterpret_cast<CaptureContext*>(user_data);
+
+    process_packet(
+        *context,
+        *header,
+        packet_data
+    );
+}
+
+//
+// Live idle expiration
+//
+
+void expire_connections_during_idle(
+    CaptureContext& context
+) {
+    const std::size_t expired_connections =
+        context.tracker.expire_idle(
+            current_time_microseconds(),
+            context.idle_timeout_microseconds
+        );
+
+    if (expired_connections > 0U) {
+        std::cout << "\n[TCP] Expired "
+                  << expired_connections
+                  << " idle connection(s) while waiting for packets"
+                  << " (idle timeout: "
+                  << context.idle_timeout_label
+                  << ").\n";
+    }
+}
+
+//
+// TCP connection summary
+//
 
 void print_connections(
     const wirescope::TcpConnectionTracker& tracker
@@ -476,7 +800,6 @@ void print_connections(
                   << connection.key.second.address << ':'
                   << connection.key.second.port << '\n';
 
-        // Each endpoint has its own TCP state.
         std::cout << "    State A     "
                   << wirescope::tcp_endpoint_state_name(
                       connection.state_a
@@ -487,7 +810,6 @@ void print_connections(
                       connection.state_b
                   ) << '\n';
 
-        // Distinguish historical records from active connections.
         std::cout << "    Tracking    "
                   << (connection.expired
                       ? "EXPIRED (idle timeout)"
@@ -556,9 +878,252 @@ void print_connections(
     std::cout << "========================================\n";
 }
 
+//
+// Ethernet datalink validation
+//
+
+[[nodiscard]] bool check_ethernet_datalink(
+    pcap_t* capture,
+    std::string_view capture_description
+) {
+    const int data_link_type = pcap_datalink(capture);
+
+    if (data_link_type == DLT_EN10MB) {
+        return true;
+    }
+
+    const char* description =
+        pcap_datalink_val_to_description(data_link_type);
+
+    std::cerr
+        << "Unsupported capture link type for "
+        << capture_description << ": "
+        << (description != nullptr ? description : "unknown")
+        << ".\n"
+        << "This version expects Ethernet (DLT_EN10MB).\n";
+
+    return false;
+}
+
+//
+// Offline PCAP mode
+//
+
+[[nodiscard]] int run_offline_capture(
+    const CommandLineOptions& options,
+    wirescope::TcpConnectionTracker& tracker,
+    std::size_t& packet_count
+) {
+    char error_buffer[PCAP_ERRBUF_SIZE]{};
+
+    pcap_t* capture = pcap_open_offline(
+        options.capture_path.c_str(),
+        error_buffer
+    );
+
+    if (capture == nullptr) {
+        std::cerr << "Could not open capture: "
+                  << error_buffer << '\n';
+
+        return 1;
+    }
+
+    if (!check_ethernet_datalink(capture, "offline capture")) {
+        pcap_close(capture);
+        return 1;
+    }
+
+    std::cout << "Offline capture: "
+              << options.capture_path << '\n';
+
+    CaptureContext context{
+        tracker,
+        options.idle_timeout_microseconds,
+        options.idle_timeout_label
+    };
+
+    pcap_pkthdr* header = nullptr;
+    const u_char* packet_data = nullptr;
+
+    int status = 0;
+
+    while (
+        (status = pcap_next_ex(
+            capture,
+            &header,
+            &packet_data
+        )) == 1
+    ) {
+        process_packet(
+            context,
+            *header,
+            packet_data
+        );
+    }
+
+    if (status == PCAP_ERROR) {
+        std::cerr << "Error reading capture: "
+                  << pcap_geterr(capture)
+                  << '\n';
+
+        pcap_close(capture);
+        packet_count = context.packet_count;
+
+        return 1;
+    }
+
+    pcap_close(capture);
+
+    packet_count = context.packet_count;
+
+    return 0;
+}
+
+//
+// Live interface mode
+//
+
+[[nodiscard]] int run_live_capture(
+    const CommandLineOptions& options,
+    wirescope::TcpConnectionTracker& tracker,
+    std::size_t& packet_count
+) {
+    char error_buffer[PCAP_ERRBUF_SIZE]{};
+
+    pcap_t* capture = pcap_open_live(
+        options.interface_name.c_str(),
+        live_snapshot_length,
+        options.promiscuous ? 1 : 0,
+        live_read_timeout_ms,
+        error_buffer
+    );
+
+    if (capture == nullptr) {
+        std::cerr << "Could not open live capture on interface '"
+                  << options.interface_name << "': "
+                  << error_buffer << '\n';
+
+        std::cerr
+            << "Check that your account has permission "
+            << "to capture traffic on this interface.\n";
+
+        return 1;
+    }
+
+    if (!check_ethernet_datalink(capture, "live capture")) {
+        pcap_close(capture);
+        return 1;
+    }
+
+    char nonblocking_error[PCAP_ERRBUF_SIZE]{};
+
+    if (
+        pcap_setnonblock(
+            capture,
+            1,
+            nonblocking_error
+        ) == -1
+    ) {
+        std::cerr << "Could not enable nonblocking capture: "
+                  << nonblocking_error << '\n';
+
+        pcap_close(capture);
+        return 1;
+    }
+
+    stop_requested = 0;
+
+    const auto previous_handler =
+        std::signal(SIGINT, handle_sigint);
+
+    if (previous_handler == SIG_ERR) {
+        std::cerr << "Could not install SIGINT handler.\n";
+
+        pcap_close(capture);
+        return 1;
+    }
+
+    std::cout << "Live capture interface: "
+              << options.interface_name << '\n';
+
+    std::cout << "Promiscuous mode: "
+              << (options.promiscuous ? "enabled" : "disabled")
+              << '\n';
+
+    std::cout << "TCP idle timeout: "
+              << options.idle_timeout_label << '\n';
+
+    std::cout << "Press Ctrl+C to stop capturing.\n\n";
+
+    CaptureContext context{
+        tracker,
+        options.idle_timeout_microseconds,
+        options.idle_timeout_label
+    };
+
+    u_char* user_data =
+        reinterpret_cast<u_char*>(&context);
+
+    int capture_result = 0;
+
+    while (stop_requested == 0) {
+        const int dispatch_status = pcap_dispatch(
+            capture,
+            0,
+            packet_callback,
+            user_data
+        );
+
+        if (dispatch_status == PCAP_ERROR) {
+            std::cerr << "\nError during live capture: "
+                      << pcap_geterr(capture) << '\n';
+
+            capture_result = 1;
+            break;
+        }
+
+        if (dispatch_status == PCAP_ERROR_BREAK) {
+            break;
+        }
+
+        if (dispatch_status < 0) {
+            std::cerr << "\nUnexpected live capture error: "
+                      << pcap_geterr(capture) << '\n';
+
+            capture_result = 1;
+            break;
+        }
+
+        // Expire connections even when no packets arrive.
+        expire_connections_during_idle(context);
+
+        if (dispatch_status == 0) {
+            std::this_thread::sleep_for(live_poll_interval);
+        }
+    }
+
+    static_cast<void>(
+        std::signal(SIGINT, previous_handler)
+    );
+
+    expire_connections_during_idle(context);
+
+    if (stop_requested != 0) {
+        std::cout << "\nCapture stopped by user.\n";
+    }
+
+    pcap_close(capture);
+
+    packet_count = context.packet_count;
+
+    return capture_result;
+}
+
 } // namespace
 
+//
 // Application entry point
+//
 
 int main(int argc, char* argv[]) {
     CommandLineOptions options;
@@ -570,7 +1135,8 @@ int main(int argc, char* argv[]) {
         options,
         argument_error
     )) {
-        std::cerr << "Error: " << argument_error << "\n\n";
+        std::cerr << "Error: "
+                  << argument_error << "\n\n";
 
         print_usage(
             std::cerr,
@@ -589,124 +1155,35 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    char error_buffer[PCAP_ERRBUF_SIZE]{};
-
-    pcap_t* capture = pcap_open_offline(
-        options.capture_path.c_str(),
-        error_buffer
-    );
-
-    if (capture == nullptr) {
-        std::cerr << "Could not open capture: "
-                  << error_buffer << '\n';
-
-        return 1;
+    if (options.list_interfaces) {
+        return list_capture_interfaces();
     }
 
-    if (pcap_datalink(capture) != DLT_EN10MB) {
-        std::cerr
-            << "Unsupported capture link type. "
-            << "This version expects Ethernet (DLT_EN10MB).\n";
-
-        pcap_close(capture);
-        return 1;
-    }
-
-    // Convert the configured timeout once.
-    const std::uint64_t tcp_idle_timeout_us =
-        options.idle_timeout_microseconds;
-
-    std::cout << "TCP idle timeout: "
-              << options.idle_timeout_label
-              << "\n";
-
-    // Create our TCP connection tracker.
     wirescope::TcpConnectionTracker tcp_tracker;
 
     std::size_t packet_count = 0U;
 
-    pcap_pkthdr* header = nullptr;
-    const u_char* packet_data = nullptr;
+    int capture_result = 0;
 
-    int status = 0;
-
-    // Read packets from the capture.
-    while (
-        (status = pcap_next_ex(
-            capture,
-            &header,
-            &packet_data
-        )) == 1
-    ) {
-        ++packet_count;
-
-        const auto* bytes =
-            reinterpret_cast<const std::uint8_t*>(packet_data);
-
-        const std::span<const std::uint8_t> frame(
-            bytes,
-            static_cast<std::size_t>(header->caplen)
+    if (!options.interface_name.empty()) {
+        capture_result = run_live_capture(
+            options,
+            tcp_tracker,
+            packet_count
         );
 
-        // Convert the packet timestamp once and use the same value
-        // for expiration and connection tracking.
-        const std::uint64_t packet_timestamp_us =
-            timestamp_to_microseconds(*header);
-
-        // Expire idle connections BEFORE observing this packet.
-        //
-        // This ensures that a packet arriving after the configured
-        // idle timeout creates a new generation instead of updating
-        // the old connection.
-        const std::size_t expired_connections =
-            tcp_tracker.expire_idle(
-                packet_timestamp_us,
-                tcp_idle_timeout_us
-            );
-
-        if (expired_connections > 0U) {
-            std::cout << "\n[TCP] Expired "
-                      << expired_connections
-                      << " idle connection(s) before packet #"
-                      << packet_count
-                      << " (idle timeout: "
-                      << options.idle_timeout_label
-                      << ").\n";
-        }
-
-        // Decode the packet.
-        const wirescope::PacketSummary summary =
-            wirescope::decode_ethernet(
-                frame,
-                static_cast<std::size_t>(header->len)
-            );
-
-        // Feed the decoded packet into the TCP tracker.
-        tcp_tracker.observe(
-            summary,
-            packet_timestamp_us
-        );
-
-        // Display individual packet information.
-        print_packet(
-            packet_count,
-            *header,
-            summary
+    } else {
+        capture_result = run_offline_capture(
+            options,
+            tcp_tracker,
+            packet_count
         );
     }
 
-    if (status == -1) {
-        std::cerr << "Error reading capture: "
-                  << pcap_geterr(capture)
-                  << '\n';
-
-        pcap_close(capture);
-        return 1;
+    if (capture_result != 0) {
+        return capture_result;
     }
 
-    pcap_close(capture);
-
-    // Display aggregated TCP connection information.
     print_connections(tcp_tracker);
 
     std::cout << "\nRead "
