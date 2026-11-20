@@ -1,4 +1,3 @@
-
 #include "wirescope/tcp_tracker.hpp"
 
 #include <cassert>
@@ -33,10 +32,7 @@ const wirescope::TcpEndpoint server{
     "198.51.100.2", server_port
 };
 
-
-// 
 // Test packet builders
-// 
 
 [[nodiscard]] PacketSummary make_ipv4_tcp_packet(
     const std::string& source,
@@ -75,7 +71,6 @@ const wirescope::TcpEndpoint server{
 
     return packet;
 }
-
 
 [[nodiscard]] PacketSummary make_ipv6_tcp_packet(
     const std::string& source,
@@ -116,7 +111,6 @@ const wirescope::TcpEndpoint server{
     return packet;
 }
 
-
 [[nodiscard]] PacketSummary make_udp_packet() {
     PacketSummary packet;
     packet.captured_length = 60U;
@@ -138,10 +132,7 @@ const wirescope::TcpEndpoint server{
     return packet;
 }
 
-
-// 
 // Handshake helper
-// 
 
 void establish_connection(
     TcpConnectionTracker& tracker,
@@ -191,10 +182,7 @@ void establish_connection(
     );
 }
 
-
-// 
 // Normal connection termination helper
-// 
 
 void complete_normal_close(
     TcpConnectionTracker& tracker,
@@ -259,10 +247,7 @@ void complete_normal_close(
     );
 }
 
-
-// 
 // Initial connection and handshake tests
-// 
 
 void test_initial_syn_creates_connection() {
     TcpConnectionTracker tracker;
@@ -294,7 +279,6 @@ void test_initial_syn_creates_connection() {
     assert(connection.syn_packets == 1U);
     assert(connection.packet_count == 1U);
 }
-
 
 void test_syn_ack_advances_endpoint_state() {
     TcpConnectionTracker tracker;
@@ -333,7 +317,6 @@ void test_syn_ack_advances_endpoint_state() {
     assert(connection.syn_ack_packets == 1U);
 }
 
-
 void test_final_ack_establishes_both_endpoints() {
     TcpConnectionTracker tracker;
 
@@ -351,7 +334,6 @@ void test_final_ack_establishes_both_endpoints() {
     assert(connection.syn_ack_packets == 1U);
     assert(connection.ack_packets == 2U);
 }
-
 
 void test_syn_retransmission_does_not_create_generation() {
     TcpConnectionTracker tracker;
@@ -378,10 +360,7 @@ void test_syn_retransmission_does_not_create_generation() {
     assert(connection.syn_packets == 2U);
 }
 
-
-// 
 // Bidirectional connection tests
-// 
 
 void test_reverse_direction_uses_same_connection() {
     TcpConnectionTracker tracker;
@@ -420,7 +399,6 @@ void test_reverse_direction_uses_same_connection() {
     assert(connection.packets_b_to_a == 1U);
 }
 
-
 void test_directional_byte_counters() {
     TcpConnectionTracker tracker;
 
@@ -452,7 +430,6 @@ void test_directional_byte_counters() {
     assert(connection.bytes_a_to_b == 54U);
     assert(connection.bytes_b_to_a == 54U);
 }
-
 
 void test_different_ports_create_different_connections() {
     TcpConnectionTracker tracker;
@@ -486,10 +463,7 @@ void test_different_ports_create_different_connections() {
     assert(tracker.connections()[1].id == 2U);
 }
 
-
-// 
 // Midstream capture tests
-// 
 
 void test_midstream_connection_is_identified() {
     TcpConnectionTracker tracker;
@@ -511,7 +485,6 @@ void test_midstream_connection_is_identified() {
     assert(connection.state_b == TcpEndpointState::Midstream);
     assert(!connection.initiator.has_value());
 }
-
 
 void test_first_observed_syn_ack_infers_initiator() {
     TcpConnectionTracker tracker;
@@ -538,10 +511,7 @@ void test_first_observed_syn_ack_infers_initiator() {
     assert(connection.state_b == TcpEndpointState::SynReceived);
 }
 
-
-// 
 // IPv6 tracking tests
-// 
 
 void test_ipv6_tcp_handshake() {
     TcpConnectionTracker tracker;
@@ -598,10 +568,7 @@ void test_ipv6_tcp_handshake() {
     assert(connection.initiator->address == ipv6_client);
 }
 
-
-// 
 // FIN lifecycle tests
-// 
 
 void test_first_fin_enters_fin_wait_1_and_close_wait() {
     TcpConnectionTracker tracker;
@@ -632,7 +599,6 @@ void test_first_fin_enters_fin_wait_1_and_close_wait() {
     assert(connection.fin_end_sequence_a == client_isn + 2U);
     assert(connection.fin_packets == 1U);
 }
-
 
 void test_acknowledging_fin_enters_fin_wait_2() {
     TcpConnectionTracker tracker;
@@ -673,7 +639,6 @@ void test_acknowledging_fin_enters_fin_wait_2() {
 
     assert(connection.fin_acked_by_b);
 }
-
 
 void test_server_fin_enters_last_ack() {
     TcpConnectionTracker tracker;
@@ -728,7 +693,6 @@ void test_server_fin_enters_last_ack() {
     assert(connection.state_b == TcpEndpointState::LastAck);
 }
 
-
 void test_final_ack_enters_time_wait_and_closed() {
     TcpConnectionTracker tracker;
 
@@ -747,7 +711,6 @@ void test_final_ack_enters_time_wait_and_closed() {
 
     assert(connection.fin_packets == 2U);
 }
-
 
 void test_ack_below_fin_boundary_does_not_advance_state() {
     TcpConnectionTracker tracker;
@@ -789,7 +752,6 @@ void test_ack_below_fin_boundary_does_not_advance_state() {
 
     assert(!connection.fin_acked_by_b);
 }
-
 
 void test_fin_payload_is_included_in_sequence_boundary() {
     TcpConnectionTracker tracker;
@@ -859,7 +821,6 @@ void test_fin_payload_is_included_in_sequence_boundary() {
     );
 }
 
-
 void test_fin_sequence_number_wraparound() {
     TcpConnectionTracker tracker;
 
@@ -909,7 +870,6 @@ void test_fin_sequence_number_wraparound() {
     assert(tracker.connections().front().fin_acked_by_b);
 }
 
-
 void test_simultaneous_close_tracks_closing_state() {
     TcpConnectionTracker tracker;
 
@@ -949,10 +909,7 @@ void test_simultaneous_close_tracks_closing_state() {
     assert(connection.state_b == TcpEndpointState::LastAck);
 }
 
-
-// 
 // RST tests
-// 
 
 void test_rst_resets_both_endpoints() {
     TcpConnectionTracker tracker;
@@ -977,7 +934,6 @@ void test_rst_resets_both_endpoints() {
 
     assert(connection.rst_packets == 1U);
 }
-
 
 void test_reset_connection_does_not_revive() {
     TcpConnectionTracker tracker;
@@ -1014,10 +970,7 @@ void test_reset_connection_does_not_revive() {
     assert(connection.state_b == TcpEndpointState::Reset);
 }
 
-
-// 
 // Connection generation tests
-// 
 
 void test_rst_followed_by_syn_creates_new_generation() {
     TcpConnectionTracker tracker;
@@ -1057,7 +1010,6 @@ void test_rst_followed_by_syn_creates_new_generation() {
     assert(tracker.connections()[1].state_a == TcpEndpointState::SynSent);
 }
 
-
 void test_completed_close_allows_new_generation() {
     TcpConnectionTracker tracker;
 
@@ -1084,10 +1036,7 @@ void test_completed_close_allows_new_generation() {
     assert(tracker.connections()[1].state_a == TcpEndpointState::SynSent);
 }
 
-
-// 
 // Idle expiration tests
-// 
 
 void test_idle_connection_expires_at_timeout_boundary() {
     TcpConnectionTracker tracker;
@@ -1130,7 +1079,6 @@ void test_idle_connection_expires_at_timeout_boundary() {
     assert(tracker.connections().front().expired);
 }
 
-
 void test_expiration_preserves_historical_statistics() {
     TcpConnectionTracker tracker;
 
@@ -1148,7 +1096,8 @@ void test_expiration_preserves_historical_statistics() {
     const auto original_packet_count =
         tracker.connections().front().packet_count;
 
-    tracker.expire_idle(2000000U, 1000000U);
+    // Verify that exactly one connection expired.
+    assert(tracker.expire_idle(2000000U, 1000000U) == 1U);
 
     const auto& historical = tracker.connections().front();
 
@@ -1156,7 +1105,6 @@ void test_expiration_preserves_historical_statistics() {
     assert(historical.packet_count == original_packet_count);
     assert(historical.id == 1U);
 }
-
 
 void test_packet_after_expiration_creates_new_generation() {
     TcpConnectionTracker tracker;
@@ -1171,7 +1119,8 @@ void test_packet_after_expiration_creates_new_generation() {
 
     tracker.observe(packet, 1000000U);
 
-    tracker.expire_idle(2000000U, 1000000U);
+    // Verify that exactly one connection expired.
+    assert(tracker.expire_idle(2000000U, 1000000U) == 1U);
 
     tracker.observe(packet, 3000000U);
 
@@ -1189,7 +1138,6 @@ void test_packet_after_expiration_creates_new_generation() {
         TcpEndpointState::Midstream
     );
 }
-
 
 void test_expiration_does_not_use_a_time_before_last_packet() {
     TcpConnectionTracker tracker;
@@ -1212,10 +1160,7 @@ void test_expiration_does_not_use_a_time_before_last_packet() {
     assert(tracker.active_size() == 1U);
 }
 
-
-// 
 // Timestamp tests
-// 
 
 void test_timestamps_track_earliest_and_latest_packet() {
     TcpConnectionTracker tracker;
@@ -1248,10 +1193,7 @@ void test_timestamps_track_earliest_and_latest_packet() {
     assert(connection.last_seen_us == 2000000U);
 }
 
-
-// 
 // Ignored packet tests
-// 
 
 void test_udp_packet_is_ignored() {
     TcpConnectionTracker tracker;
@@ -1261,7 +1203,6 @@ void test_udp_packet_is_ignored() {
     assert(tracker.size() == 0U);
     assert(tracker.active_size() == 0U);
 }
-
 
 void test_packet_without_transport_is_ignored() {
     TcpConnectionTracker tracker;
@@ -1280,7 +1221,6 @@ void test_packet_without_transport_is_ignored() {
     assert(tracker.size() == 0U);
 }
 
-
 void test_packet_without_ip_layer_is_ignored() {
     TcpConnectionTracker tracker;
 
@@ -1291,10 +1231,7 @@ void test_packet_without_ip_layer_is_ignored() {
     assert(tracker.size() == 0U);
 }
 
-
-// 
 // Reset and utility tests
-// 
 
 void test_clear_removes_all_connections() {
     TcpConnectionTracker tracker;
@@ -1310,7 +1247,6 @@ void test_clear_removes_all_connections() {
     assert(tracker.active_size() == 0U);
     assert(tracker.connections().empty());
 }
-
 
 void test_clear_resets_connection_identifier() {
     TcpConnectionTracker tracker;
@@ -1342,7 +1278,6 @@ void test_clear_resets_connection_identifier() {
     assert(tracker.size() == 1U);
     assert(tracker.connections().front().id == 1U);
 }
-
 
 void test_state_name_formatting() {
     assert(
@@ -1452,10 +1387,7 @@ void test_state_name_formatting() {
 
 } // namespace
 
-
-// 
 // Test runner
-// 
 
 int main() {
 

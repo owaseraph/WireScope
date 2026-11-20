@@ -4,25 +4,248 @@
 
 #include <pcap/pcap.h>
 
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <span>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <type_traits>
 #include <variant>
 
 namespace {
 
-// TCP connection idle timeout.
-//
-// A connection with no observed packets for five minutes is removed
-// from active tracking. Its historical statistics remain available.
-constexpr std::uint64_t tcp_idle_timeout_seconds = 300U;
+// Command-line configuration
 
-constexpr std::uint64_t tcp_idle_timeout_us =
-    tcp_idle_timeout_seconds * 1'000'000U;
+struct CommandLineOptions {
+    std::string capture_path;
+
+    // Default idle timeout: five minutes.
+    std::string idle_timeout_label{"300s"};
+
+    std::uint64_t idle_timeout_microseconds{
+        300'000'000U
+    };
+
+    bool show_help{};
+};
+
+// Parse a positive integer duration and convert it to microseconds.
+//
+// Supported suffixes:
+//   ms = milliseconds
+//   s  = seconds
+//   m  = minutes
+//   h  = hours
+//
+// No suffix means seconds.
+[[nodiscard]] bool parse_idle_timeout(
+    std::string_view value,
+    CommandLineOptions& options,
+    std::string& error
+) {
+    std::uint64_t multiplier = 1'000'000U;
+
+    if (value.ends_with("ms")) {
+        multiplier = 1'000U;
+        value.remove_suffix(2U);
+
+    } else if (value.ends_with("s")) {
+        multiplier = 1'000'000U;
+        value.remove_suffix(1U);
+
+    } else if (value.ends_with("m")) {
+        multiplier = 60U * 1'000'000U;
+        value.remove_suffix(1U);
+
+    } else if (value.ends_with("h")) {
+        multiplier = 3'600U * 1'000'000U;
+        value.remove_suffix(1U);
+    }
+
+    if (value.empty()) {
+        error = "idle timeout requires a numeric duration.";
+        return false;
+    }
+
+    std::uint64_t duration_value = 0U;
+
+    const char* const end =
+        value.data() + value.size();
+
+    const auto conversion = std::from_chars(
+        value.data(),
+        end,
+        duration_value,
+        10
+    );
+
+    if (
+        conversion.ec != std::errc{} ||
+        conversion.ptr != end
+    ) {
+        error =
+            "invalid idle timeout. Use a positive integer "
+            "followed optionally by ms, s, m, or h.";
+
+        return false;
+    }
+
+    if (duration_value == 0U) {
+        error = "idle timeout must be greater than zero.";
+        return false;
+    }
+
+    constexpr std::uint64_t maximum_value =
+        std::numeric_limits<std::uint64_t>::max();
+
+    if (duration_value > maximum_value / multiplier) {
+        error = "idle timeout is too large.";
+        return false;
+    }
+
+    options.idle_timeout_microseconds =
+        duration_value * multiplier;
+
+    options.idle_timeout_label = std::string(
+        value.data(),
+        value.size()
+    );
+
+    // Preserve the unit suffix in the displayed configuration.
+    // The numeric part was removed from the original view above,
+    // so the caller assigns the complete label after parsing.
+
+    return true;
+}
+
+// Parse command-line arguments.
+[[nodiscard]] bool parse_arguments(
+    int argc,
+    char* argv[],
+    CommandLineOptions& options,
+    std::string& error
+) {
+    bool timeout_option_seen = false;
+
+    for (int index = 1; index < argc; ++index) {
+        const std::string_view argument{argv[index]};
+
+        if (argument == "-h" || argument == "--help") {
+            options.show_help = true;
+            return true;
+        }
+
+        // Form 1:
+        // --idle-timeout 300
+        // --idle-timeout 1ms
+        if (argument == "--idle-timeout") {
+            if (timeout_option_seen) {
+                error = "--idle-timeout may only be specified once.";
+                return false;
+            }
+
+            if (index + 1 >= argc) {
+                error = "--idle-timeout requires a duration.";
+                return false;
+            }
+
+            const std::string_view duration{argv[++index]};
+
+            if (!parse_idle_timeout(duration, options, error)) {
+                return false;
+            }
+
+            options.idle_timeout_label = std::string(duration);
+            timeout_option_seen = true;
+
+            continue;
+        }
+
+        // Form 2:
+        // --idle-timeout=300
+        // --idle-timeout=1ms
+        constexpr std::string_view timeout_prefix =
+            "--idle-timeout=";
+
+        if (argument.starts_with(timeout_prefix)) {
+            if (timeout_option_seen) {
+                error = "--idle-timeout may only be specified once.";
+                return false;
+            }
+
+            const std::string_view duration =
+                argument.substr(timeout_prefix.size());
+
+            if (!parse_idle_timeout(duration, options, error)) {
+                return false;
+            }
+
+            options.idle_timeout_label = std::string(duration);
+            timeout_option_seen = true;
+
+            continue;
+        }
+
+        // Reject unknown options.
+        if (!argument.empty() && argument.front() == '-') {
+            error = "unknown option: " + std::string(argument);
+            return false;
+        }
+
+        // Only one capture file is accepted.
+        if (!options.capture_path.empty()) {
+            error = "only one capture file may be specified.";
+            return false;
+        }
+
+        options.capture_path = std::string(argument);
+    }
+
+    if (options.capture_path.empty()) {
+        error = "missing capture file path.";
+        return false;
+    }
+
+    return true;
+}
+
+// Print command-line usage information.
+void print_usage(
+    std::ostream& output,
+    std::string_view program_name
+) {
+    output
+        << "Usage: " << program_name
+        << " [options] <capture.pcap>\n\n"
+
+        << "Options:\n"
+        << "  --idle-timeout <duration>\n"
+        << "      Maximum TCP connection inactivity before expiration.\n"
+        << "      Supported units: ms, s, m, h.\n"
+        << "      A missing unit means seconds.\n"
+        << "      Default: 300s.\n\n"
+
+        << "  -h, --help\n"
+        << "      Display this help message.\n\n"
+
+        << "Examples:\n"
+        << "  " << program_name
+        << " capture.pcap\n"
+
+        << "  " << program_name
+        << " --idle-timeout 60s capture.pcap\n"
+
+        << "  " << program_name
+        << " --idle-timeout 5m capture.pcap\n"
+
+        << "  " << program_name
+        << " --idle-timeout 1ms capture.pcap\n";
+}
 
 // Protocol name helpers
 
@@ -338,15 +561,38 @@ void print_connections(
 // Application entry point
 
 int main(int argc, char* argv[]) {
-    if (argc != 2) {
-        std::cerr << "Usage: wirescope <capture.pcap>\n";
+    CommandLineOptions options;
+    std::string argument_error;
+
+    if (!parse_arguments(
+        argc,
+        argv,
+        options,
+        argument_error
+    )) {
+        std::cerr << "Error: " << argument_error << "\n\n";
+
+        print_usage(
+            std::cerr,
+            argc > 0 ? argv[0] : "wirescope"
+        );
+
         return 2;
+    }
+
+    if (options.show_help) {
+        print_usage(
+            std::cout,
+            argc > 0 ? argv[0] : "wirescope"
+        );
+
+        return 0;
     }
 
     char error_buffer[PCAP_ERRBUF_SIZE]{};
 
     pcap_t* capture = pcap_open_offline(
-        argv[1],
+        options.capture_path.c_str(),
         error_buffer
     );
 
@@ -365,6 +611,14 @@ int main(int argc, char* argv[]) {
         pcap_close(capture);
         return 1;
     }
+
+    // Convert the configured timeout once.
+    const std::uint64_t tcp_idle_timeout_us =
+        options.idle_timeout_microseconds;
+
+    std::cout << "TCP idle timeout: "
+              << options.idle_timeout_label
+              << "\n";
 
     // Create our TCP connection tracker.
     wirescope::TcpConnectionTracker tcp_tracker;
@@ -401,8 +655,9 @@ int main(int argc, char* argv[]) {
 
         // Expire idle connections BEFORE observing this packet.
         //
-        // This ensures that a packet arriving after the idle timeout
-        // creates a new generation instead of updating the old one.
+        // This ensures that a packet arriving after the configured
+        // idle timeout creates a new generation instead of updating
+        // the old connection.
         const std::size_t expired_connections =
             tcp_tracker.expire_idle(
                 packet_timestamp_us,
@@ -415,8 +670,8 @@ int main(int argc, char* argv[]) {
                       << " idle connection(s) before packet #"
                       << packet_count
                       << " (idle timeout: "
-                      << tcp_idle_timeout_seconds
-                      << " seconds).\n";
+                      << options.idle_timeout_label
+                      << ").\n";
         }
 
         // Decode the packet.
