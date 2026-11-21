@@ -22,10 +22,6 @@
 
 namespace {
 
-//
-// Configuration
-//
-
 constexpr int live_snapshot_length = 262144;
 constexpr int live_read_timeout_ms = 250;
 
@@ -37,13 +33,10 @@ void handle_sigint(int) {
     stop_requested = 1;
 }
 
-//
-// Command-line configuration
-//
-
 struct CommandLineOptions {
     std::string capture_path;
     std::string interface_name;
+    std::string filter_expression;
 
     std::string idle_timeout_label{"300s"};
 
@@ -55,10 +48,6 @@ struct CommandLineOptions {
     bool show_help{};
     bool list_interfaces{};
 };
-
-//
-// Idle timeout parsing
-//
 
 [[nodiscard]] bool parse_idle_timeout(
     std::string_view value,
@@ -135,10 +124,6 @@ struct CommandLineOptions {
     return true;
 }
 
-//
-// Command-line argument parsing
-//
-
 [[nodiscard]] bool parse_arguments(
     int argc,
     char* argv[],
@@ -148,6 +133,7 @@ struct CommandLineOptions {
     bool timeout_option_seen = false;
     bool interface_option_seen = false;
     bool promiscuous_option_seen = false;
+    bool filter_option_seen = false;
 
     for (int index = 1; index < argc; ++index) {
         const std::string_view argument{argv[index]};
@@ -205,13 +191,60 @@ struct CommandLineOptions {
             continue;
         }
 
+        if (argument == "--filter") {
+            if (filter_option_seen) {
+                error = "--filter may only be specified once.";
+                return false;
+            }
+
+            if (
+                index + 1 >= argc ||
+                argv[index + 1][0] == '\0' ||
+                argv[index + 1][0] == '-'
+            ) {
+                error = "--filter requires a BPF expression.";
+                return false;
+            }
+
+            options.filter_expression = argv[++index];
+            filter_option_seen = true;
+
+            continue;
+        }
+
+        constexpr std::string_view filter_prefix = "--filter=";
+
+        if (argument.starts_with(filter_prefix)) {
+            if (filter_option_seen) {
+                error = "--filter may only be specified once.";
+                return false;
+            }
+
+            const std::string_view expression =
+                argument.substr(filter_prefix.size());
+
+            if (expression.empty()) {
+                error = "--filter requires a BPF expression.";
+                return false;
+            }
+
+            options.filter_expression =
+                std::string(expression);
+
+            filter_option_seen = true;
+            continue;
+        }
+
         if (argument == "--idle-timeout") {
             if (timeout_option_seen) {
                 error = "--idle-timeout may only be specified once.";
                 return false;
             }
 
-            if (index + 1 >= argc) {
+            if (
+                index + 1 >= argc ||
+                argv[index + 1][0] == '\0'
+            ) {
                 error = "--idle-timeout requires a duration.";
                 return false;
             }
@@ -264,7 +297,8 @@ struct CommandLineOptions {
             !options.capture_path.empty() ||
             !options.interface_name.empty() ||
             timeout_option_seen ||
-            promiscuous_option_seen
+            promiscuous_option_seen ||
+            filter_option_seen
         ) {
             error =
                 "--list-interfaces must be used without "
@@ -311,10 +345,6 @@ struct CommandLineOptions {
     return true;
 }
 
-//
-// Usage information
-//
-
 void print_usage(
     std::ostream& output,
     std::string_view program_name
@@ -344,6 +374,10 @@ void print_usage(
         << "      --no-promiscuous\n"
         << "      Disable promiscuous mode (default).\n\n"
 
+        << "      --filter <expression>\n"
+        << "      Apply a libpcap BPF packet filter.\n"
+        << "      Works with offline and live capture.\n\n"
+
         << "      --idle-timeout <duration>\n"
         << "      Maximum TCP connection inactivity before expiration.\n"
         << "      Supported units: ms, s, m, h.\n"
@@ -359,10 +393,19 @@ void print_usage(
         << " capture.pcap\n"
 
         << "  " << program_name
+        << " --filter \"tcp\" capture.pcap\n"
+
+        << "  " << program_name
+        << " --filter \"port 8080\" capture.pcap\n"
+
+        << "  " << program_name
         << " --list-interfaces\n"
 
         << "  " << program_name
         << " --interface lo\n"
+
+        << "  " << program_name
+        << " --interface lo --filter \"tcp port 8080\"\n"
 
         << "  " << program_name
         << " --interface enp3s0 --promiscuous\n"
@@ -373,10 +416,6 @@ void print_usage(
         << "  " << program_name
         << " --idle-timeout 1ms capture.pcap\n";
 }
-
-//
-// Interface enumeration
-//
 
 [[nodiscard]] int list_capture_interfaces() {
     char error_buffer[PCAP_ERRBUF_SIZE]{};
@@ -428,10 +467,6 @@ void print_usage(
     return 0;
 }
 
-//
-// Protocol name helpers
-//
-
 [[nodiscard]] const char* ether_type_name(
     std::uint16_t ether_type
 ) {
@@ -475,10 +510,6 @@ void print_usage(
     }
 }
 
-//
-// Timestamp conversion
-//
-
 [[nodiscard]] std::uint64_t timestamp_to_microseconds(
     const pcap_pkthdr& header
 ) noexcept {
@@ -508,10 +539,6 @@ void print_usage(
 
     return static_cast<std::uint64_t>(microseconds);
 }
-
-//
-// Packet printing
-//
 
 void print_transport(
     const wirescope::TransportInfo& transport
@@ -665,10 +692,6 @@ void print_packet(
     }
 }
 
-//
-// Shared packet-processing pipeline
-//
-
 struct CaptureContext {
     wirescope::TcpConnectionTracker& tracker;
     std::uint64_t idle_timeout_microseconds;
@@ -733,7 +756,11 @@ void packet_callback(
     const pcap_pkthdr* header,
     const u_char* packet_data
 ) {
-    if (user_data == nullptr || header == nullptr) {
+    if (
+        user_data == nullptr ||
+        header == nullptr ||
+        packet_data == nullptr
+    ) {
         return;
     }
 
@@ -746,10 +773,6 @@ void packet_callback(
         packet_data
     );
 }
-
-//
-// Live idle expiration
-//
 
 void expire_connections_during_idle(
     CaptureContext& context
@@ -769,10 +792,6 @@ void expire_connections_during_idle(
                   << ").\n";
     }
 }
-
-//
-// TCP connection summary
-//
 
 void print_connections(
     const wirescope::TcpConnectionTracker& tracker
@@ -878,10 +897,6 @@ void print_connections(
     std::cout << "========================================\n";
 }
 
-//
-// Ethernet datalink validation
-//
-
 [[nodiscard]] bool check_ethernet_datalink(
     pcap_t* capture,
     std::string_view capture_description
@@ -905,9 +920,52 @@ void print_connections(
     return false;
 }
 
-//
-// Offline PCAP mode
-//
+[[nodiscard]] bool apply_capture_filter(
+    pcap_t* capture,
+    const std::string& expression,
+    std::string_view capture_description
+) {
+    if (expression.empty()) {
+        return true;
+    }
+
+    bpf_program compiled_filter{};
+
+    if (
+        pcap_compile(
+            capture,
+            &compiled_filter,
+            expression.c_str(),
+            1,
+            PCAP_NETMASK_UNKNOWN
+        ) == -1
+    ) {
+        std::cerr
+            << "Could not compile BPF filter '"
+            << expression << "' for "
+            << capture_description << ": "
+            << pcap_geterr(capture) << '\n';
+
+        return false;
+    }
+
+    const int filter_status =
+        pcap_setfilter(capture, &compiled_filter);
+
+    pcap_freecode(&compiled_filter);
+
+    if (filter_status == -1) {
+        std::cerr
+            << "Could not attach BPF filter '"
+            << expression << "' to "
+            << capture_description << ": "
+            << pcap_geterr(capture) << '\n';
+
+        return false;
+    }
+
+    return true;
+}
 
 [[nodiscard]] int run_offline_capture(
     const CommandLineOptions& options,
@@ -933,8 +991,24 @@ void print_connections(
         return 1;
     }
 
+    if (
+        !apply_capture_filter(
+            capture,
+            options.filter_expression,
+            "offline capture"
+        )
+    ) {
+        pcap_close(capture);
+        return 1;
+    }
+
     std::cout << "Offline capture: "
               << options.capture_path << '\n';
+
+    if (!options.filter_expression.empty()) {
+        std::cout << "BPF filter: "
+                  << options.filter_expression << '\n';
+    }
 
     CaptureContext context{
         tracker,
@@ -979,10 +1053,6 @@ void print_connections(
     return 0;
 }
 
-//
-// Live interface mode
-//
-
 [[nodiscard]] int run_live_capture(
     const CommandLineOptions& options,
     wirescope::TcpConnectionTracker& tracker,
@@ -1011,6 +1081,17 @@ void print_connections(
     }
 
     if (!check_ethernet_datalink(capture, "live capture")) {
+        pcap_close(capture);
+        return 1;
+    }
+
+    if (
+        !apply_capture_filter(
+            capture,
+            options.filter_expression,
+            "live capture"
+        )
+    ) {
         pcap_close(capture);
         return 1;
     }
@@ -1053,6 +1134,11 @@ void print_connections(
     std::cout << "TCP idle timeout: "
               << options.idle_timeout_label << '\n';
 
+    if (!options.filter_expression.empty()) {
+        std::cout << "BPF filter: "
+                  << options.filter_expression << '\n';
+    }
+
     std::cout << "Press Ctrl+C to stop capturing.\n\n";
 
     CaptureContext context{
@@ -1094,7 +1180,6 @@ void print_connections(
             break;
         }
 
-        // Expire connections even when no packets arrive.
         expire_connections_during_idle(context);
 
         if (dispatch_status == 0) {
@@ -1120,10 +1205,6 @@ void print_connections(
 }
 
 } // namespace
-
-//
-// Application entry point
-//
 
 int main(int argc, char* argv[]) {
     CommandLineOptions options;
