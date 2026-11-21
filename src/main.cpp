@@ -1,9 +1,11 @@
 
 #include "wirescope/decoder.hpp"
 #include "wirescope/tcp_tracker.hpp"
+#include "wirescope/tcp_reassembler.hpp"
 
 #include <pcap/pcap.h>
 
+#include <algorithm>
 #include <charconv>
 #include <chrono>
 #include <csignal>
@@ -12,6 +14,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -33,6 +36,8 @@ void handle_sigint(int) {
     stop_requested = 1;
 }
 
+// Command-line configuration
+
 struct CommandLineOptions {
     std::string capture_path;
     std::string interface_name;
@@ -48,6 +53,8 @@ struct CommandLineOptions {
     bool show_help{};
     bool list_interfaces{};
 };
+
+// Idle timeout parsing
 
 [[nodiscard]] bool parse_idle_timeout(
     std::string_view value,
@@ -123,6 +130,8 @@ struct CommandLineOptions {
 
     return true;
 }
+
+// Command-line argument parsing
 
 [[nodiscard]] bool parse_arguments(
     int argc,
@@ -228,10 +237,9 @@ struct CommandLineOptions {
                 return false;
             }
 
-            options.filter_expression =
-                std::string(expression);
-
+            options.filter_expression = std::string(expression);
             filter_option_seen = true;
+
             continue;
         }
 
@@ -345,6 +353,8 @@ struct CommandLineOptions {
     return true;
 }
 
+// Usage information
+
 void print_usage(
     std::ostream& output,
     std::string_view program_name
@@ -417,6 +427,8 @@ void print_usage(
         << " --idle-timeout 1ms capture.pcap\n";
 }
 
+// Interface enumeration
+
 [[nodiscard]] int list_capture_interfaces() {
     char error_buffer[PCAP_ERRBUF_SIZE]{};
 
@@ -467,6 +479,8 @@ void print_usage(
     return 0;
 }
 
+// Protocol name helpers
+
 [[nodiscard]] const char* ether_type_name(
     std::uint16_t ether_type
 ) {
@@ -510,6 +524,8 @@ void print_usage(
     }
 }
 
+// Timestamp conversion
+
 [[nodiscard]] std::uint64_t timestamp_to_microseconds(
     const pcap_pkthdr& header
 ) noexcept {
@@ -539,6 +555,8 @@ void print_usage(
 
     return static_cast<std::uint64_t>(microseconds);
 }
+
+// Packet printing
 
 void print_transport(
     const wirescope::TransportInfo& transport
@@ -692,10 +710,168 @@ void print_packet(
     }
 }
 
+// TCP payload extraction
+
+struct DecodedTcpSegment {
+    wirescope::TcpStreamEndpoint source;
+    wirescope::TcpStreamEndpoint destination;
+
+    wirescope::TcpInfo tcp;
+
+    std::span<const std::uint8_t> payload;
+};
+
+[[nodiscard]] std::optional<DecodedTcpSegment> extract_tcp_segment(
+    const wirescope::PacketSummary& packet,
+    std::span<const std::uint8_t> frame
+) {
+    // Ethernet header plus all VLAN headers.
+    const std::size_t network_offset =
+        14U + packet.vlan_tags.size() * 4U;
+
+    std::string source_address;
+    std::string destination_address;
+
+    const wirescope::TcpInfo* tcp = nullptr;
+
+    std::size_t ip_header_length = 0U;
+    std::size_t transport_length = 0U;
+
+    if (packet.ipv4.has_value()) {
+        const auto& ip = *packet.ipv4;
+
+        // IP fragment reassembly is not implemented yet.
+        if (
+            ip.fragment_offset != 0U ||
+            ip.more_fragments
+        ) {
+            return std::nullopt;
+        }
+
+        if (!ip.transport.has_value()) {
+            return std::nullopt;
+        }
+
+        tcp = std::get_if<wirescope::TcpInfo>(&*ip.transport);
+
+        if (tcp == nullptr) {
+            return std::nullopt;
+        }
+
+        if (ip.total_length < ip.header_length) {
+            return std::nullopt;
+        }
+
+        source_address = ip.source_address;
+        destination_address = ip.destination_address;
+
+        ip_header_length = ip.header_length;
+
+        transport_length =
+            static_cast<std::size_t>(ip.total_length) -
+            ip.header_length;
+
+    } else if (packet.ipv6.has_value()) {
+        const auto& ip = *packet.ipv6;
+
+        // This version skips IPv6 fragmented packets.
+        if (ip.fragment.has_value()) {
+            return std::nullopt;
+        }
+
+        if (!ip.transport.has_value()) {
+            return std::nullopt;
+        }
+
+        tcp = std::get_if<wirescope::TcpInfo>(&*ip.transport);
+
+        if (tcp == nullptr) {
+            return std::nullopt;
+        }
+
+        constexpr std::size_t ipv6_base_header_length = 40U;
+
+        if (ip.header_length < ipv6_base_header_length) {
+            return std::nullopt;
+        }
+
+        const std::size_t extension_length =
+            ip.header_length - ipv6_base_header_length;
+
+        if (ip.payload_length < extension_length) {
+            return std::nullopt;
+        }
+
+        source_address = ip.source_address;
+        destination_address = ip.destination_address;
+
+        ip_header_length = ip.header_length;
+
+        transport_length =
+            static_cast<std::size_t>(ip.payload_length) -
+            extension_length;
+
+    } else {
+        return std::nullopt;
+    }
+
+    if (tcp->header_length > transport_length) {
+        return std::nullopt;
+    }
+
+    if (network_offset > frame.size()) {
+        return std::nullopt;
+    }
+
+    if (ip_header_length > frame.size() - network_offset) {
+        return std::nullopt;
+    }
+
+    const std::size_t tcp_header_offset =
+        network_offset + ip_header_length;
+
+    if (tcp->header_length > frame.size() - tcp_header_offset) {
+        return std::nullopt;
+    }
+
+    const std::size_t payload_offset =
+        tcp_header_offset + tcp->header_length;
+
+    const std::size_t declared_payload_length =
+        transport_length - tcp->header_length;
+
+    const std::size_t captured_payload_length =
+        std::min(
+            declared_payload_length,
+            frame.size() - payload_offset
+        );
+
+    return DecodedTcpSegment{
+        wirescope::TcpStreamEndpoint{
+            source_address,
+            tcp->source_port
+        },
+        wirescope::TcpStreamEndpoint{
+            destination_address,
+            tcp->destination_port
+        },
+        *tcp,
+        frame.subspan(
+            payload_offset,
+            captured_payload_length
+        )
+    };
+}
+
+// Shared packet-processing pipeline
+
 struct CaptureContext {
     wirescope::TcpConnectionTracker& tracker;
+    wirescope::TcpStreamReassembler& reassembler;
+
     std::uint64_t idle_timeout_microseconds;
     std::string idle_timeout_label;
+
     std::size_t packet_count{};
 };
 
@@ -744,6 +920,18 @@ void process_packet(
         packet_timestamp_us
     );
 
+    const auto tcp_segment =
+        extract_tcp_segment(summary, frame);
+
+    if (tcp_segment.has_value()) {
+        context.reassembler.observe(
+            tcp_segment->source,
+            tcp_segment->destination,
+            tcp_segment->tcp,
+            tcp_segment->payload
+        );
+    }
+
     print_packet(
         context.packet_count,
         header,
@@ -774,6 +962,8 @@ void packet_callback(
     );
 }
 
+// Live idle expiration
+
 void expire_connections_during_idle(
     CaptureContext& context
 ) {
@@ -792,6 +982,8 @@ void expire_connections_during_idle(
                   << ").\n";
     }
 }
+
+// TCP connection summary
 
 void print_connections(
     const wirescope::TcpConnectionTracker& tracker
@@ -897,6 +1089,127 @@ void print_connections(
     std::cout << "========================================\n";
 }
 
+// Reassembled TCP stream output
+
+void print_payload_preview(
+    std::span<const std::uint8_t> payload
+) {
+    constexpr std::size_t preview_limit = 512U;
+
+    const std::size_t count =
+        std::min(payload.size(), preview_limit);
+
+    std::cout << "    Preview     \"";
+
+    for (std::size_t index = 0U; index < count; ++index) {
+        const std::uint8_t byte = payload[index];
+
+        switch (byte) {
+            case '\n':
+                std::cout << "\\n";
+                break;
+
+            case '\r':
+                std::cout << "\\r";
+                break;
+
+            case '\t':
+                std::cout << "\\t";
+                break;
+
+            case '\\':
+                std::cout << "\\\\";
+                break;
+
+            case '"':
+                std::cout << "\\\"";
+                break;
+
+            default:
+                if (byte >= 0x20U && byte <= 0x7EU) {
+                    std::cout << static_cast<char>(byte);
+                } else {
+                    std::cout << '.';
+                }
+                break;
+        }
+    }
+
+    std::cout << '"';
+
+    if (payload.size() > count) {
+        std::cout << " ... [preview truncated]";
+    }
+
+    std::cout << '\n';
+}
+
+void print_tcp_streams(
+    const wirescope::TcpStreamReassembler& reassembler
+) {
+    const auto& streams = reassembler.streams();
+
+    std::cout << "\n========================================\n";
+    std::cout << "          REASSEMBLED TCP STREAMS\n";
+    std::cout << "========================================\n";
+
+    if (streams.empty()) {
+        std::cout << "No TCP streams observed.\n";
+        return;
+    }
+
+    for (
+        std::size_t index = 0U;
+        index < streams.size();
+        ++index
+    ) {
+        const auto& stream = streams[index];
+
+        std::cout << "\nStream #" << (index + 1U) << '\n';
+
+        std::cout << "    Direction   "
+                  << stream.source.address << ':'
+                  << stream.source.port
+                  << " -> "
+                  << stream.destination.address << ':'
+                  << stream.destination.port << '\n';
+
+        std::cout << "    Segments    "
+                  << stream.segments_observed << '\n';
+
+        std::cout << "    Payload     "
+                  << stream.payload.size() << " bytes\n";
+
+        std::cout << "    Out of order "
+                  << stream.out_of_order_segments << " segment(s)\n";
+
+        std::cout << "    Retransmits "
+                  << stream.retransmitted_bytes << " duplicate byte(s)\n";
+
+        if (stream.pending_bytes > 0U) {
+            std::cout << "    Pending     "
+                      << stream.pending_bytes
+                      << " byte(s) waiting for missing data\n";
+        }
+
+        if (stream.dropped_bytes > 0U) {
+            std::cout << "    Dropped     "
+                      << stream.dropped_bytes
+                      << " byte(s) due to memory limits\n";
+        }
+
+        if (stream.payload.empty()) {
+            std::cout << "    Data        No contiguous payload available.\n";
+        } else {
+            print_payload_preview(stream.payload);
+        }
+    }
+
+    std::cout << "\n========================================\n";
+}
+
+// Ethernet datalink validation
+
 [[nodiscard]] bool check_ethernet_datalink(
     pcap_t* capture,
     std::string_view capture_description
@@ -919,6 +1232,8 @@ void print_connections(
 
     return false;
 }
+
+// BPF filter
 
 [[nodiscard]] bool apply_capture_filter(
     pcap_t* capture,
@@ -967,9 +1282,12 @@ void print_connections(
     return true;
 }
 
+// Offline PCAP mode
+
 [[nodiscard]] int run_offline_capture(
     const CommandLineOptions& options,
     wirescope::TcpConnectionTracker& tracker,
+    wirescope::TcpStreamReassembler& reassembler,
     std::size_t& packet_count
 ) {
     char error_buffer[PCAP_ERRBUF_SIZE]{};
@@ -1012,6 +1330,7 @@ void print_connections(
 
     CaptureContext context{
         tracker,
+        reassembler,
         options.idle_timeout_microseconds,
         options.idle_timeout_label
     };
@@ -1053,9 +1372,12 @@ void print_connections(
     return 0;
 }
 
+// Live interface mode
+
 [[nodiscard]] int run_live_capture(
     const CommandLineOptions& options,
     wirescope::TcpConnectionTracker& tracker,
+    wirescope::TcpStreamReassembler& reassembler,
     std::size_t& packet_count
 ) {
     char error_buffer[PCAP_ERRBUF_SIZE]{};
@@ -1143,6 +1465,7 @@ void print_connections(
 
     CaptureContext context{
         tracker,
+        reassembler,
         options.idle_timeout_microseconds,
         options.idle_timeout_label
     };
@@ -1241,6 +1564,7 @@ int main(int argc, char* argv[]) {
     }
 
     wirescope::TcpConnectionTracker tcp_tracker;
+    wirescope::TcpStreamReassembler tcp_reassembler;
 
     std::size_t packet_count = 0U;
 
@@ -1250,6 +1574,7 @@ int main(int argc, char* argv[]) {
         capture_result = run_live_capture(
             options,
             tcp_tracker,
+            tcp_reassembler,
             packet_count
         );
 
@@ -1257,6 +1582,7 @@ int main(int argc, char* argv[]) {
         capture_result = run_offline_capture(
             options,
             tcp_tracker,
+            tcp_reassembler,
             packet_count
         );
     }
@@ -1266,6 +1592,7 @@ int main(int argc, char* argv[]) {
     }
 
     print_connections(tcp_tracker);
+    print_tcp_streams(tcp_reassembler);
 
     std::cout << "\nRead "
               << packet_count
