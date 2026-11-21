@@ -1,4 +1,3 @@
-
 cmake_minimum_required(VERSION 3.20)
 
 project(WireScope
@@ -7,13 +6,9 @@ project(WireScope
     LANGUAGES CXX
 )
 
-# Language configuration
-
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-
-# Compiler warnings
 
 function(wirescope_enable_warnings target)
     target_compile_options(${target} PRIVATE
@@ -53,6 +48,23 @@ target_link_libraries(wirescope_tcp_tracker
 
 wirescope_enable_warnings(wirescope_tcp_tracker)
 
+# TCP stream reassembler
+
+add_library(wirescope_tcp_reassembler
+    src/tcp_reassembler.cpp
+)
+
+add_library(
+    WireScope::TcpReassembler
+    ALIAS wirescope_tcp_reassembler
+)
+
+target_link_libraries(wirescope_tcp_reassembler
+    PUBLIC WireScope::Decoder
+)
+
+wirescope_enable_warnings(wirescope_tcp_reassembler)
+
 # Unit tests
 
 enable_testing()
@@ -91,6 +103,23 @@ add_test(
     COMMAND tcp_tracker_tests
 )
 
+# TCP stream reassembler tests
+
+add_executable(tcp_reassembler_tests
+    tests/tcp_reassembler_tests.cpp
+)
+
+target_link_libraries(tcp_reassembler_tests
+    PRIVATE WireScope::TcpReassembler
+)
+
+wirescope_enable_warnings(tcp_reassembler_tests)
+
+add_test(
+    NAME tcp_reassembler_tests
+    COMMAND tcp_reassembler_tests
+)
+
 # Capture-file and live-capture application
 
 find_path(PCAP_INCLUDE_DIR
@@ -117,6 +146,7 @@ if(PCAP_INCLUDE_DIR AND PCAP_LIBRARY)
         PRIVATE
             WireScope::Decoder
             WireScope::TcpTracker
+            WireScope::TcpReassembler
             ${PCAP_LIBRARY}
             Threads::Threads
     )
