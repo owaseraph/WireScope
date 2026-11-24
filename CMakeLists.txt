@@ -1,162 +1,70 @@
 cmake_minimum_required(VERSION 3.20)
-
-project(WireScope
-    VERSION 0.1.0
-    DESCRIPTION "A C++20 packet analyzer"
-    LANGUAGES CXX
-)
+project(WireScope VERSION 1.0.0 DESCRIPTION "C++20 offline and live packet analyzer" LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+option(WIRESCOPE_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+option(WIRESCOPE_BUILD_TESTS "Build unit and smoke tests" ON)
 
-function(wirescope_enable_warnings target)
-    target_compile_options(${target} PRIVATE
-        -Wall
-        -Wextra
-        -Wpedantic
-        -Wconversion
-        -Wsign-conversion
-    )
+function(wirescope_target target)
+  target_compile_options(${target} PRIVATE
+    $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Wconversion;-Wsign-conversion>
+  )
+  if(WIRESCOPE_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(${target} PRIVATE -fsanitize=address,undefined)
+  endif()
 endfunction()
 
-# Core packet decoder
-
-add_library(wirescope_decoder
-    src/decoder.cpp
-)
-
+add_library(wirescope_decoder src/decoder.cpp)
 add_library(WireScope::Decoder ALIAS wirescope_decoder)
+target_include_directories(wirescope_decoder PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(wirescope_decoder PUBLIC cxx_std_20)
+wirescope_target(wirescope_decoder)
 
-target_include_directories(wirescope_decoder
-    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
+add_library(wirescope_tcp src/tcp_tracker.cpp src/tcp_reassembler.cpp)
+add_library(WireScope::TCP ALIAS wirescope_tcp)
+target_link_libraries(wirescope_tcp PUBLIC WireScope::Decoder)
+target_include_directories(wirescope_tcp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+wirescope_target(wirescope_tcp)
 
-wirescope_enable_warnings(wirescope_decoder)
+add_library(wirescope_protocols src/http_parser.cpp src/dns_parser.cpp src/tls_parser.cpp)
+add_library(WireScope::Protocols ALIAS wirescope_protocols)
+target_include_directories(wirescope_protocols PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+wirescope_target(wirescope_protocols)
 
-# TCP connection tracker
+add_library(wirescope_capture_io src/pcap_io.cpp)
+target_include_directories(wirescope_capture_io PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+wirescope_target(wirescope_capture_io)
 
-add_library(wirescope_tcp_tracker
-    src/tcp_tracker.cpp
-)
-
-add_library(WireScope::TcpTracker ALIAS wirescope_tcp_tracker)
-
-target_link_libraries(wirescope_tcp_tracker
-    PUBLIC WireScope::Decoder
-)
-
-wirescope_enable_warnings(wirescope_tcp_tracker)
-
-# TCP stream reassembler
-
-add_library(wirescope_tcp_reassembler
-    src/tcp_reassembler.cpp
-)
-
-add_library(
-    WireScope::TcpReassembler
-    ALIAS wirescope_tcp_reassembler
-)
-
-target_link_libraries(wirescope_tcp_reassembler
-    PUBLIC WireScope::Decoder
-)
-
-wirescope_enable_warnings(wirescope_tcp_reassembler)
-
-# Unit tests
-
-enable_testing()
-
-# Packet decoder tests
-
-add_executable(decoder_tests
-    tests/decoder_tests.cpp
-)
-
-target_link_libraries(decoder_tests
-    PRIVATE WireScope::Decoder
-)
-
-wirescope_enable_warnings(decoder_tests)
-
-add_test(
-    NAME decoder_tests
-    COMMAND decoder_tests
-)
-
-# TCP tracker tests
-
-add_executable(tcp_tracker_tests
-    tests/tcp_tracker_tests.cpp
-)
-
-target_link_libraries(tcp_tracker_tests
-    PRIVATE WireScope::TcpTracker
-)
-
-wirescope_enable_warnings(tcp_tracker_tests)
-
-add_test(
-    NAME tcp_tracker_tests
-    COMMAND tcp_tracker_tests
-)
-
-# TCP stream reassembler tests
-
-add_executable(tcp_reassembler_tests
-    tests/tcp_reassembler_tests.cpp
-)
-
-target_link_libraries(tcp_reassembler_tests
-    PRIVATE WireScope::TcpReassembler
-)
-
-wirescope_enable_warnings(tcp_reassembler_tests)
-
-add_test(
-    NAME tcp_reassembler_tests
-    COMMAND tcp_reassembler_tests
-)
-
-# Capture-file and live-capture application
-
-find_path(PCAP_INCLUDE_DIR
-    NAMES pcap/pcap.h
-)
-
-find_library(PCAP_LIBRARY
-    NAMES pcap
-)
-
+add_executable(wirescope src/main.cpp)
+target_link_libraries(wirescope PRIVATE WireScope::Decoder WireScope::TCP WireScope::Protocols wirescope_capture_io)
+find_path(PCAP_INCLUDE_DIR NAMES pcap/pcap.h)
+find_library(PCAP_LIBRARY NAMES pcap)
 if(PCAP_INCLUDE_DIR AND PCAP_LIBRARY)
-
-    find_package(Threads REQUIRED)
-
-    add_executable(wirescope
-        src/main.cpp
-    )
-
-    target_include_directories(wirescope
-        PRIVATE ${PCAP_INCLUDE_DIR}
-    )
-
-    target_link_libraries(wirescope
-        PRIVATE
-            WireScope::Decoder
-            WireScope::TcpTracker
-            WireScope::TcpReassembler
-            ${PCAP_LIBRARY}
-            Threads::Threads
-    )
-
-    wirescope_enable_warnings(wirescope)
-
+  target_include_directories(wirescope PRIVATE ${PCAP_INCLUDE_DIR})
+  target_link_libraries(wirescope PRIVATE ${PCAP_LIBRARY})
+  target_compile_definitions(wirescope PRIVATE WIRESCOPE_HAS_LIBPCAP=1)
+  message(STATUS "libpcap found: enabling full BPF filter expressions")
 else()
+  message(STATUS "libpcap not found: using WireScope built-in filter expressions")
+endif()
+wirescope_target(wirescope)
 
-    message(STATUS
-        "libpcap not found: skipping the capture-file and live-capture CLI"
-    )
-
+if(WIRESCOPE_BUILD_TESTS)
+  enable_testing()
+  foreach(test_name IN ITEMS decoder tcp http dns tls)
+    add_executable(${test_name}_tests tests/${test_name}_tests.cpp)
+    if(test_name STREQUAL "decoder")
+      target_link_libraries(${test_name}_tests PRIVATE WireScope::Decoder)
+    elseif(test_name STREQUAL "tcp")
+      target_link_libraries(${test_name}_tests PRIVATE WireScope::TCP)
+    else()
+      target_link_libraries(${test_name}_tests PRIVATE WireScope::Protocols)
+    endif()
+    wirescope_target(${test_name}_tests)
+    target_compile_options(${test_name}_tests PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>)
+    add_test(NAME ${test_name}_tests COMMAND ${test_name}_tests)
+  endforeach()
 endif()

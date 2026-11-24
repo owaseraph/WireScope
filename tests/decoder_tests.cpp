@@ -10,7 +10,9 @@ namespace {
 
 using Bytes = std::vector<std::uint8_t>;
 
+// ------------------------------------------------------------
 // Small packet-building helpers
+// ------------------------------------------------------------
 
 void append_u16(Bytes& bytes, std::uint16_t value) {
     bytes.push_back(static_cast<std::uint8_t>(value >> 8U));
@@ -94,6 +96,9 @@ void append_tcp_syn(Bytes& bytes) {
     return bytes;
 }
 
+// ------------------------------------------------------------
+// Original regression tests: Ethernet and IPv4 behavior
+// ------------------------------------------------------------
 
 void test_truncated_ethernet() {
     const std::array<std::uint8_t, 5> bytes{0U, 1U, 2U, 3U, 4U};
@@ -227,7 +232,9 @@ void test_first_ipv4_fragment_can_contain_partial_udp_datagram() {
     assert(std::get<wirescope::UdpInfo>(*result.ipv4->transport).length == 32U);
 }
 
+// ------------------------------------------------------------
 // IPv6 address formatting
+// ------------------------------------------------------------
 
 void test_ipv6_formatting_compresses_middle_zero_run() {
     const std::array<std::uint8_t, 16> address{
@@ -282,8 +289,9 @@ void test_ipv6_formatting_uses_first_longest_run_on_tie() {
     assert(wirescope::format_ipv6(address) == "1::2:0:0:3:4");
 }
 
-
+// ------------------------------------------------------------
 // VLAN parsing
+// ------------------------------------------------------------
 
 void test_single_vlan_tag_decodes_ipv4_at_correct_offset() {
     Bytes bytes;
@@ -365,7 +373,9 @@ void test_truncated_vlan_tag_is_reported() {
     assert(result.vlan_tags.empty());
 }
 
+// ------------------------------------------------------------
 // IPv6 base header and transport parsing
+// ------------------------------------------------------------
 
 void test_ipv6_udp_frame() {
     const auto bytes = make_ipv6_udp_frame();
@@ -452,7 +462,9 @@ void test_wrong_version_in_ipv6_frame_is_reported() {
     assert(!result.ipv6.has_value());
 }
 
+// ------------------------------------------------------------
 // IPv6 extension headers and fragmentation
+// ------------------------------------------------------------
 
 void test_ipv6_hop_by_hop_header_then_udp() {
     Bytes bytes;
