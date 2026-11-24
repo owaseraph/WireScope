@@ -1,0 +1,10 @@
+Prebuilt executable: wirescope-linux-x86_64
+Target: Linux x86-64
+Compiler: GCC 14.2.0
+Build type: Release
+C++ standard: C++20
+Project libraries: statically linked into executable
+System runtime: dynamically linked to glibc and libstdc++
+
+For best compatibility with your own Linux distribution, rebuild from source:
+  ./build.sh

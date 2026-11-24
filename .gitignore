@@ -1,9 +1,19 @@
 # CMake build output
 /build/
 /build-*/
-/cmake-build-*/
+/cmake-build*/
 CMakeUserPresets.json
 
-# Packet captures can be large and may contain sensitive traffic
+# Packet captures
+# Ignore personal captures, but keep bundled demo fixtures.
 *.pcap
 *.pcapng
+!fixtures/*.pcap
+!fixtures/*.pcapng
+
+# Generated analysis exports
+*.csv
+*.json
+
+# Generated executable
+/dist/wirescope-linux-x86_64
