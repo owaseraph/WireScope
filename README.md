@@ -189,4 +189,5 @@ WireScope/
 
 ## License
 
-No license grant is included in this source bundle. Add a license before redistributing the project under an open-source license.
+WireScope is licensed under the MIT License.
+See [LICENSE](LICENSE) for details.
