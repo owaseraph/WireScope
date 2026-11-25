@@ -1,10 +1,26 @@
-Prebuilt executable: wirescope-linux-x86_64
-Target: Linux x86-64
-Compiler: GCC 14.2.0
-Build type: Release
-C++ standard: C++20
-Project libraries: statically linked into executable
-System runtime: dynamically linked to glibc and libstdc++
+WireScope 1.2.0
 
-For best compatibility with your own Linux distribution, rebuild from source:
-  ./build.sh
+Prebuilt executable:
+  dist/wirescope-linux-x86_64
+  Linux x86-64 CLI frontend, Release build.
+
+Qt GUI:
+  The complete GUI source is included under gui/.
+  Install Qt 6 Widgets and build with:
+    sudo pacman -S --needed qt6-base
+    cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DWIRESCOPE_BUILD_GUI=ON
+    cmake --build build -j"$(nproc)"
+  Launch:
+    ./build/wirescope-gui
+
+Live capture:
+  The Linux GUI uses AF_PACKET raw sockets and requires CAP_NET_RAW.
+  Apply the capability to the GUI binary after each rebuild:
+    sudo setcap cap_net_raw+ep ./build/wirescope-gui
+
+GUI enhancements in this package:
+  - Follow TCP stream from packet and connection context menus / double-click.
+  - Per-direction ASCII and hexadecimal payload views.
+  - Connection time-range matching to disambiguate reused endpoint tuples.
+  - Expanded packet protocol tree for IP, TCP, UDP, DNS, HTTP and TLS metadata.
+  - Statistics dashboard with traffic timeline, protocol breakdown and top conversations.
