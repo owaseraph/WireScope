@@ -2,11 +2,13 @@
 
 **WireScope** is a C++20 packet analyzer for offline Ethernet PCAP files and live Linux network interfaces. It decodes packet headers, tracks TCP connections, reconstructs directional TCP streams, and performs first-pass HTTP, DNS and TLS ClientHello analysis.
 
-The CLI and analysis engine build without mandatory third-party libraries. The optional desktop application uses Qt 6 Widgets. When libpcap development files are present, WireScope uses libpcap to compile full Berkeley Packet Filter (BPF) expressions. Without libpcap, the built-in filter parser supports common protocol, host and port filters.
+The CLI and core libraries build without mandatory third-party libraries. The optional desktop application uses Qt 6 Widgets. The GUI uses the shared `AnalysisEngine`; the CLI has its own processing context and orchestration while reusing the shared decoder, TCP, and protocol libraries. When libpcap development files are present, the CLI can compile full Berkeley Packet Filter (BPF) expressions. Without libpcap, its built-in filter parser supports a limited set of protocol, host, and port terms joined with `and`.
+
+Live and offline capture reads in the GUI run in a worker thread. Captured packets are delivered to the GUI thread, where `AnalysisEngine` currently ingests, decodes, and analyzes them. High-rate or large captures can therefore put processing work on the GUI thread.
 
 ## Features
 
-### Desktop GUI
+### Implemented features — Desktop GUI
 
 - Optional Qt 6 Widgets desktop application (`wirescope-gui`).
 - Open classic Ethernet PCAP files or capture live traffic from a Linux interface.
@@ -18,11 +20,11 @@ The CLI and analysis engine build without mandatory third-party libraries. The o
 - Double-click a TCP connection to follow its directional streams; a packet context menu also offers **Follow TCP stream**. The viewer displays stream counters and separate ASCII/hex payload views.
 - Double-click DNS, HTTP or TLS rows to inspect full message/handshake metadata.
 - Statistics dashboard with packet/byte totals, capture duration, average packet and bit rates, protocol distribution, top TCP conversations and a 60-bucket traffic timeline.
-- Background capture worker so live packet reads do not block the interface.
+- Background capture worker for PCAP reads and live packet reads. Packet ingestion, decoding, and analysis currently run on the GUI thread after delivery.
 - CLI remains available as a separate executable and Qt is optional.
 
 
-### Capture and packet decoding
+### Implemented features — Capture and packet decoding
 
 - Classic PCAP offline capture (little-endian and big-endian, microsecond and nanosecond timestamps).
 - Live Linux capture through `AF_PACKET` raw sockets.
@@ -34,7 +36,7 @@ The CLI and analysis engine build without mandatory third-party libraries. The o
 - Configurable TCP idle timeout.
 - Ctrl+C graceful shutdown for live capture.
 
-### TCP analysis
+### Implemented features — TCP analysis
 
 - Bidirectional TCP connection tracking and canonical endpoint pairs.
 - Handshake/control-flag counters, directional packet/byte counters and endpoint-state summaries.
@@ -43,15 +45,15 @@ The CLI and analysis engine build without mandatory third-party libraries. The o
 - Sequence-number wraparound-aware comparisons, out-of-order buffering, duplicate suppression and bounded memory.
 - Default limits: 1 MiB pending data and 16 MiB retained stream data per direction.
 
-### Application protocols
+### Implemented features — Application protocols
 
 - **HTTP/1.x:** request and response start lines, headers, Content-Length framing, chunked transfer framing, pipelined messages, status codes and incomplete-message detection. Captured stream bytes can also be examined in the GUI's ASCII/hex stream viewer.
 - **DNS/mDNS over UDP:** query/response metadata, compressed-name decoding, response codes, and common A, AAAA, CNAME, NS, PTR, MX and TXT records.
 - **TLS ClientHello metadata:** legacy version, supported versions, SNI, ALPN and offered cipher-suite identifiers/names.
 
-WireScope does not decrypt TLS traffic. HTTP body framing and byte counts are reported by the parser; the Follow TCP Stream viewer can inspect captured application payload bytes, including any unencrypted HTTP body bytes. To keep the desktop interface responsive, each directional stream view renders up to the first 2 MiB. DNS over TCP, DoT and DoH are not decoded. IP fragment reassembly is not implemented, so fragmented transport datagrams are skipped by application analysis.
+WireScope does not decrypt TLS traffic. HTTP body framing and byte counts are reported by the parser; the Follow TCP Stream viewer can inspect captured application payload bytes, including any unencrypted HTTP body bytes. Each directional stream view renders up to the first 2 MiB. DNS over TCP, DoT and DoH are not decoded. IP fragment reassembly is not implemented, so fragmented transport datagrams are skipped by application analysis.
 
-### Reporting
+### Implemented features — Reporting
 
 - Console summaries for packets, TCP connections, reassembled streams, DNS messages, HTTP messages and TLS ClientHello metadata.
 - JSON export with packet, connection, stream, DNS and application-analysis sections.
@@ -173,15 +175,24 @@ The original local `tcp-test.pcap` and `ipv6-loopback.pcap` referenced in the de
 ./build/wirescope ./ipv6-loopback.pcap
 ```
 
-## Capture format and limitations
+## Current limitations (not implemented)
 
-- The built-in offline reader supports classic PCAP with Ethernet link type (`DLT_EN10MB`). PCAPNG and non-Ethernet link types need conversion or a libpcap-based workflow.
+- The built-in offline reader supports classic PCAP with Ethernet link type (`DLT_EN10MB`) only. PCAPNG and other datalinks are unsupported.
+- `CapturedPacket` does not carry explicit datalink metadata; current capture and analysis assume Ethernet frames.
+- Live capture is Linux-specific and uses `AF_PACKET` raw sockets.
+- Radiotap parsing, IEEE 802.11 decoding, and Wi-Fi monitor-mode capture are not implemented.
 - The built-in reader rejects capture records larger than 64 MiB.
-- Linux live capture uses an `AF_PACKET` socket. The filter is evaluated in user space; for high-volume interfaces, narrow capture at the interface or use an environment with libpcap/kernel-level capture filtering.
-- The built-in no-libpcap filter grammar does not implement parentheses, `or`, CIDR networks or arbitrary BPF primitives.
+- The CLI's built-in no-libpcap filter grammar does not implement parentheses, `or`, CIDR networks, or arbitrary BPF primitives. Live capture filtering is evaluated in user space.
 - TCP stream reconstruction cannot recover bytes sent before capture began. It retains directional streams independently and does not combine application requests and responses into a single transaction.
-- IP fragmentation, DNS-over-TCP, HTTP/2, HTTP/3, QUIC decryption, TLS decryption, certificate-chain parsing and encrypted DNS are outside this release's scope.
-- TLS SNI is visible only when the ClientHello contains a plaintext server_name extension; Encrypted ClientHello is not decoded.
+- TCP reassembly buffers are bounded, but packet history and overall analysis state have no retention limit.
+- IP fragment reassembly is absent; fragmented transport datagrams are skipped by application analysis. DNS over TCP, DNS over TLS, and DNS over HTTPS are not decoded.
+- HTTP/2 and HTTP/3 are not parsed. TLS decryption and certificate-chain parsing are absent.
+- TLS SNI is available only when visible in a plaintext ClientHello; Encrypted ClientHello is not decoded.
+- There is no automated GUI test target. Some test source files are not registered with CMake and are not run by the standard CTest suite.
+
+## Planned features
+
+The next planned milestone is datalink-aware Wi-Fi analysis: explicit datalink metadata; separate Ethernet and wireless decoding routes; independently tested Radiotap parsing; focused 802.11 frame-control, address-role, and management information-element decoding (including SSID); shared-core integration; and GUI presentation. Initial monitor-mode capture will use an already configured monitor interface. WireScope will not automatically change interface mode or channel. See [`IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) for the phased roadmap.
 
 ## Project layout
 

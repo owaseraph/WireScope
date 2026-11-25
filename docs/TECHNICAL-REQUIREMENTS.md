@@ -14,24 +14,22 @@ WireScope is a packet analyzer with two frontends:
 - A CLI for scripted, terminal-based and offline analysis.
 - A Qt desktop GUI for interactive capture, packet inspection, stream following and statistics.
 
-Both frontends must use the same packet capture and analysis capabilities. The GUI must not reimplement protocol parsers or invoke the CLI as its analysis backend.
+Both frontends reuse the same capture, decoding, TCP, and protocol capabilities. The GUI uses `AnalysisEngine` and must not reimplement protocol parsers or invoke the CLI as its analysis backend. The CLI has its own processing context and orchestration and does not call `AnalysisEngine`.
 
 ## 2. Current architecture
 
 ```text
 CLI frontend (src/main.cpp)       Qt GUI frontend (gui/)
-             \                       /
-              \                     /
-               Shared AnalysisEngine
-                         |
-       +-----------------+------------------+
-       |                 |                  |
- Packet decoder     TCP analysis      Protocol parsers
-       |                 |             HTTP / DNS / TLS
-       +-----------------+------------------+
-                         |
-                   Capture I/O
-                PCAP / Linux AF_PACKET
+             |                            |
+ Own processing context          AnalysisEngine
+             |                            |
+             +--------- shared core -----+
+             |       decoder / TCP /       |
+             |       protocol parsers      |
+             +-------------+---------------+
+                           |
+                      Capture I/O
+                 PCAP / Linux AF_PACKET
 ```
 
 ### Source ownership
@@ -85,7 +83,7 @@ CLI frontend (src/main.cpp)       Qt GUI frontend (gui/)
 - Inspect TCP connections and follow reassembled directional streams.
 - Inspect DNS observations and HTTP/TLS application-stream metadata.
 - Show packet/byte totals, capture duration, average rates, protocol distribution, top TCP conversations and traffic timeline.
-- Keep capture I/O off the GUI thread.
+- Run capture reads in a worker thread. Captured packets are delivered to the GUI thread, where packet ingestion, decoding, and analysis currently run; this can affect responsiveness during high-rate captures.
 
 ### Reporting
 
@@ -131,7 +129,7 @@ Live capture needs suitable privileges, normally `CAP_NET_RAW` or root. Never ch
 
 - Keep the GUI responsive during live capture.
 - Avoid repeated full-table rebuilds for every packet when a batched model update is appropriate.
-- Preserve bounded TCP stream reassembly limits.
+- Preserve bounded TCP stream reassembly limits. Packet history and overall analysis state currently have no retention limit.
 - Before adding long-running high-volume capture features, evaluate packet-history retention and expose a bounded capture/buffering policy rather than silently allowing unbounded memory growth.
 
 ### Maintainability
@@ -144,28 +142,30 @@ Live capture needs suitable privileges, normally `CAP_NET_RAW` or root. Never ch
 
 ## 6. Known limitations / explicit non-goals for the current release
 
-- Built-in offline capture reader supports classic Ethernet PCAP, not PCAPNG or arbitrary datalink formats.
+- Built-in offline capture reader supports classic PCAP with Ethernet link type only; PCAPNG and other datalinks are unsupported.
+- `CapturedPacket` does not carry explicit datalink metadata, and current capture and analysis assume Ethernet frames.
 - Live capture is Linux-specific through `AF_PACKET`.
 - The built-in no-libpcap filter parser does not implement arbitrary BPF, parentheses or OR expressions.
 - IP fragment reassembly is not implemented; fragmented transport datagrams are skipped by application analysis.
 - DNS over TCP, DNS over TLS and DNS over HTTPS are not decoded.
 - HTTP/2 and HTTP/3 are not parsed.
-- TLS records are not decrypted; encrypted application data and certificate chains are not inspected.
+- TLS decryption and certificate-chain parsing are absent; encrypted application data is not inspected.
 - SNI is available only when visible in a plaintext ClientHello; Encrypted ClientHello is not decoded.
 - Current capture and analysis are Ethernet-oriented. Raw IEEE 802.11/Radiotap decoding and monitor mode are **not implemented yet**.
+- There is no automated GUI test target. Additional test source files not registered by CMake are not part of the standard CTest run.
 
 ## 7. Next planned capability: Wi-Fi analysis
 
 **Status: Planned — not implemented.**
 
-Requirements for a future wireless milestone:
+Planned requirements for a future wireless milestone (not currently implemented):
 
 1. Represent the capture datalink explicitly instead of assuming Ethernet everywhere.
 2. Preserve Ethernet and PCAP behavior without regression.
 3. Add bounded Radiotap header parsing, including present-bit/field alignment handling.
 4. Add IEEE 802.11 frame-control parsing and management/control/data classification.
 5. Parse available metadata such as BSSID, transmitter/receiver addresses, SSID information elements, frequency/channel and signal strength when present.
-6. Support monitor interfaces provided by the OS. Do not silently switch a managed Wi-Fi interface into monitor mode.
+6. Initially use an already configured monitor interface. Do not automatically change interface mode or channel.
 7. Route raw wireless frames to the 802.11 decoder, never to the Ethernet decoder.
 8. Add synthetic parser tests and sample fixtures that do not require Wi-Fi hardware, root privileges or access points.
 9. Surface wireless fields in the GUI and statistics without breaking Ethernet packet views.

@@ -4,7 +4,7 @@ This is the project roadmap and working sequence. Update status as work is merge
 
 ## Current baseline
 
-The `develop` branch currently contains the C++20 CLI, shared `AnalysisEngine`, optional Qt 6 Widgets GUI, Ethernet PCAP/live capture, TCP tracking/reassembly, HTTP/1.x, DNS/mDNS over UDP, TLS ClientHello metadata, stream inspection and statistics.
+The current baseline contains the C++20 CLI, optional Qt 6 Widgets GUI, Ethernet PCAP/live capture, TCP tracking/reassembly, HTTP/1.x, DNS/mDNS over UDP, TLS ClientHello metadata, stream inspection and statistics. The GUI uses `AnalysisEngine`; the CLI has its own processing context and orchestration while reusing the shared decoder, TCP, and protocol libraries. GUI capture reads run in a worker thread, but packet ingestion, decoding, and analysis currently run on the GUI thread.
 
 Check the current GitHub head before starting a task; branch and commit names in older notes can become stale.
 
@@ -31,17 +31,14 @@ Add wireless packet capture from a monitor-mode interface without breaking exist
 
 ### Work sequence
 
-1. Inspect `CapturedPacket`, `read_pcap_file`, `capture_live`, `AnalysisEngine::ingest` and the GUI `CaptureWorker` end to end.
-2. Introduce an explicit datalink/link-type field in the captured-packet model. Do not infer datalink type from packet bytes.
-3. Preserve the existing Ethernet path and classic Ethernet PCAP behavior.
-4. Extend capture I/O to identify the link type delivered by a monitor interface (typically Radiotap, but handle supported alternatives explicitly).
-5. Add a dedicated Radiotap parser. Handle variable present bitmaps, field alignment, bounds checks and unknown fields safely.
-6. Add a dedicated IEEE 802.11 decoder for frame control, type/subtype and address fields.
-7. Parse management information elements needed for visible SSID and relevant metadata.
-8. Expose wireless metadata through a link-layer-neutral packet record so the GUI can render it without assuming IPv4/IPv6 exists.
-9. Add handcrafted unit tests and small, synthetic fixtures.
-10. Add GUI details and statistics for wireless frames.
-11. Update docs and run a complete regression build.
+1. Introduce explicit datalink metadata at capture and packet boundaries. `CapturedPacket` currently has no datalink field; do not infer link type from frame bytes.
+2. Keep separate Ethernet and wireless decoding routes. Preserve current Ethernet PCAP behavior and never pass Radiotap or raw 802.11 frames to `decode_ethernet`.
+3. Implement Radiotap parsing as a dedicated core parser, including variable present bitmaps, field alignment, bounds checks, and safe handling of unknown fields. Test it independently.
+4. Add focused IEEE 802.11 decoding: frame control and type/subtype, address roles for covered frame types, and management information elements such as SSID. Represent unavailable or ambiguous fields explicitly.
+5. Integrate datalink-aware capture and wireless metadata through shared core APIs. Resolve how the Linux live-capture source reports the actual delivered link type; do not assume `AF_PACKET` provides this from packet bytes.
+6. Add GUI presentation for wireless metadata and improve processing performance. The current GUI ingests and analyzes delivered packets on its GUI thread, so include a design for keeping high-rate capture responsive.
+7. Add deterministic synthetic parser and routing tests that need no hardware or privileges, followed by fixture-based regression checks and CLI/Qt-enabled build verification.
+8. Update documentation only to describe behavior implemented and verified. Keep implemented features, current limitations, and planned work clearly separated.
 
 ### Acceptance criteria
 
@@ -52,7 +49,7 @@ Add wireless packet capture from a monitor-mode interface without breaking exist
 - Management, control and data frames are classified correctly for the covered frame types.
 - BSSID and transmitter/receiver addresses are selected according to frame type, with ambiguous/unknown values represented honestly.
 - SSID, frequency/channel and signal strength are shown only when present and valid.
-- A user can select an already-created monitor interface. WireScope does not silently switch the connected managed interface or change regulatory/channel settings.
+- Capture initially uses an already configured monitor interface. WireScope does not automatically change interface mode or channel.
 - GUI and CLI continue to build; all existing tests pass plus new wireless tests.
 
 ### Risks to resolve before coding
