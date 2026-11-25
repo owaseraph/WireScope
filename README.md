@@ -2,9 +2,25 @@
 
 **WireScope** is a C++20 packet analyzer for offline Ethernet PCAP files and live Linux network interfaces. It decodes packet headers, tracks TCP connections, reconstructs directional TCP streams, and performs first-pass HTTP, DNS and TLS ClientHello analysis.
 
-The project builds without mandatory third-party libraries. When libpcap development files are present, WireScope uses libpcap to compile full Berkeley Packet Filter (BPF) expressions. Without libpcap, the built-in filter parser supports common protocol, host and port filters.
+The CLI and analysis engine build without mandatory third-party libraries. The optional desktop application uses Qt 6 Widgets. When libpcap development files are present, WireScope uses libpcap to compile full Berkeley Packet Filter (BPF) expressions. Without libpcap, the built-in filter parser supports common protocol, host and port filters.
 
 ## Features
+
+### Desktop GUI
+
+- Optional Qt 6 Widgets desktop application (`wirescope-gui`).
+- Open classic Ethernet PCAP files or capture live traffic from a Linux interface.
+- Start/stop controls, interface selection and optional promiscuous mode.
+- Packet table with a display filter for protocol, address and port terms.
+- Expandable Ethernet, VLAN, IPv4/IPv6, TCP and UDP protocol trees, including individual TCP flags and IPv6 extension headers.
+- DNS questions and resource records embedded in the selected packet's protocol tree; HTTP headers and TLS ClientHello metadata are shown for matching TCP conversations.
+- Hexadecimal and ASCII packet-byte viewer.
+- Double-click a TCP connection to follow its directional streams; a packet context menu also offers **Follow TCP stream**. The viewer displays stream counters and separate ASCII/hex payload views.
+- Double-click DNS, HTTP or TLS rows to inspect full message/handshake metadata.
+- Statistics dashboard with packet/byte totals, capture duration, average packet and bit rates, protocol distribution, top TCP conversations and a 60-bucket traffic timeline.
+- Background capture worker so live packet reads do not block the interface.
+- CLI remains available as a separate executable and Qt is optional.
+
 
 ### Capture and packet decoding
 
@@ -23,17 +39,17 @@ The project builds without mandatory third-party libraries. When libpcap develop
 - Bidirectional TCP connection tracking and canonical endpoint pairs.
 - Handshake/control-flag counters, directional packet/byte counters and endpoint-state summaries.
 - Idle connection expiration.
-- Directional TCP stream reconstruction.
+- Directional TCP stream reconstruction with first/last-seen timestamps, allowing the GUI to distinguish reused endpoint tuples when following a specific connection.
 - Sequence-number wraparound-aware comparisons, out-of-order buffering, duplicate suppression and bounded memory.
 - Default limits: 1 MiB pending data and 16 MiB retained stream data per direction.
 
 ### Application protocols
 
-- **HTTP/1.x:** request and response start lines, headers, Content-Length framing, chunked transfer framing, pipelined messages, status codes and incomplete-message detection.
+- **HTTP/1.x:** request and response start lines, headers, Content-Length framing, chunked transfer framing, pipelined messages, status codes and incomplete-message detection. Captured stream bytes can also be examined in the GUI's ASCII/hex stream viewer.
 - **DNS/mDNS over UDP:** query/response metadata, compressed-name decoding, response codes, and common A, AAAA, CNAME, NS, PTR, MX and TXT records.
 - **TLS ClientHello metadata:** legacy version, supported versions, SNI, ALPN and offered cipher-suite identifiers/names.
 
-WireScope does not decrypt TLS traffic or display HTTP bodies. HTTP body framing and byte counts are reported. DNS over TCP, DoT and DoH are not decoded. IP fragment reassembly is not implemented, so fragmented transport datagrams are skipped by application analysis.
+WireScope does not decrypt TLS traffic. HTTP body framing and byte counts are reported by the parser; the Follow TCP Stream viewer can inspect captured application payload bytes, including any unencrypted HTTP body bytes. To keep the desktop interface responsive, each directional stream view renders up to the first 2 MiB. DNS over TCP, DoT and DoH are not decoded. IP fragment reassembly is not implemented, so fragmented transport datagrams are skipped by application analysis.
 
 ### Reporting
 
@@ -44,6 +60,7 @@ WireScope does not decrypt TLS traffic or display HTTP bodies. HTTP body framing
 ## Requirements
 
 - CMake 3.20 or newer.
+- Qt 6 Widgets development package for the desktop GUI (optional).
 - A C++20 compiler (GCC 11+, Clang 14+, or a recent MSVC).
 - Linux for live capture. Offline classic PCAP analysis is portable.
 - Optional: libpcap development package to enable full BPF syntax.
@@ -51,20 +68,20 @@ WireScope does not decrypt TLS traffic or display HTTP bodies. HTTP body framing
 ### Arch Linux
 
 ```bash
-sudo pacman -S --needed base-devel cmake libpcap
+sudo pacman -S --needed base-devel cmake libpcap qt6-base
 ```
 
 Live capture generally requires root or `CAP_NET_RAW`. For example, to grant the built executable raw-packet capability:
 
 ```bash
-sudo setcap cap_net_raw,cap_net_admin=eip ./build/wirescope
+sudo setcap cap_net_raw+ep ./build/wirescope-gui
 ```
 
 Use only on a binary you trust. Alternatively, run live capture with `sudo`.
 
 ## Prebuilt executable
 
-A Linux x86-64 Release executable is included at `dist/wirescope-linux-x86_64`. It was built in the packaging environment and uses the system glibc/libstdc++ runtime. Rebuilding on your own Arch Linux installation is recommended for the most reliable runtime compatibility.
+A Linux x86-64 Release CLI executable is included at `dist/wirescope-linux-x86_64`. It uses the system glibc/libstdc++ runtime. Rebuilding on your own Arch Linux installation is recommended for the most reliable runtime compatibility. The Qt GUI is built locally when `qt6-base` is installed; it is not bundled as a prebuilt executable.
 
 ## Build
 
@@ -72,6 +89,14 @@ A Linux x86-64 Release executable is included at `dist/wirescope-linux-x86_64`. 
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j"$(nproc)"
 ```
+
+When Qt 6 is installed, CMake also builds the GUI:
+
+```bash
+./build/wirescope-gui
+```
+
+If Qt 6 is not installed, the GUI target is skipped and the CLI still builds.
 
 Run tests:
 
@@ -129,7 +154,7 @@ Use `--quiet` to suppress per-packet console lines while retaining final analysi
 
 ## Demo captures
 
-Two tiny generated captures are included in `fixtures/`:
+Three tiny generated captures are included in `fixtures/`:
 
 - `dns-demo.pcap`: one DNS A query and response for `example.com`.
 - `http-demo.pcap`: one HTTP GET request and a Content-Length response.
@@ -165,6 +190,7 @@ WireScope/
 ├── CMakeLists.txt
 ├── README.md
 ├── include/wirescope/
+│   ├── analysis_engine.hpp
 │   ├── common.hpp
 │   ├── decoder.hpp
 │   ├── dns_parser.hpp
@@ -173,7 +199,17 @@ WireScope/
 │   ├── tcp_reassembler.hpp
 │   ├── tcp_tracker.hpp
 │   └── tls_parser.hpp
+├── gui/
+│   ├── main.cpp
+│   ├── main_window.cpp/.hpp
+│   ├── capture_worker.cpp/.hpp
+│   ├── packet_table_model.cpp/.hpp
+│   ├── tcp_stream_dialog.cpp/.hpp
+│   └── statistics_widget.cpp/.hpp
+│   ├── tcp_stream_dialog.cpp/.hpp
+│   └── statistics_widget.cpp/.hpp
 ├── src/
+│   ├── analysis_engine.cpp
 │   ├── decoder.cpp
 │   ├── dns_parser.cpp
 │   ├── http_parser.cpp
@@ -189,5 +225,4 @@ WireScope/
 
 ## License
 
-WireScope is licensed under the MIT License.
-See [LICENSE](LICENSE) for details.
+WireScope is licensed under the MIT License. See [LICENSE](LICENSE) for details.

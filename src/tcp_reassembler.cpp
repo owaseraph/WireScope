@@ -1,11 +1,13 @@
 #include "wirescope/tcp_reassembler.hpp"
 #include <limits>
+#include <algorithm>
 namespace wirescope {
 namespace { constexpr std::size_t max_pending=1024U*1024U,max_payload=16U*1024U*1024U;
 void sat(std::uint64_t& x){if(x<UINT64_MAX)++x;}
 bool ahead(std::uint32_t a,std::uint32_t b){auto d=static_cast<std::uint32_t>(a-b);return d!=0U&&d<0x80000000U;}
 }
-void TcpStreamReassembler::observe(const Endpoint& src,const Endpoint& dst,const TcpInfo& tcp,std::span<const std::uint8_t> data){
+void TcpStreamReassembler::observe(const Endpoint& src, const Endpoint& dst, const TcpInfo& tcp,
+                                   std::span<const std::uint8_t> data, std::uint64_t timestamp_us){
     const auto key=std::pair{src,dst}; auto it=indices_.find(key);
     const bool syn=(tcp.flags&0x02U)!=0; const std::uint32_t begin=tcp.sequence_number+(syn?1U:0U);
     if(it!=indices_.end()&&syn){
@@ -19,6 +21,14 @@ void TcpStreamReassembler::observe(const Endpoint& src,const Endpoint& dst,const
         TcpStream s;s.source=src;s.destination=dst;streams_.push_back(std::move(s));states_.push_back({});it=indices_.emplace(key,streams_.size()-1U).first;
     }
     auto idx=it->second;auto& s=streams_[idx];auto& st=states_[idx];sat(s.segments);
+    if (!s.has_timestamps) {
+        s.first_seen_us = timestamp_us;
+        s.last_seen_us = timestamp_us;
+        s.has_timestamps = true;
+    } else {
+        s.first_seen_us = std::min(s.first_seen_us, timestamp_us);
+        s.last_seen_us = std::max(s.last_seen_us, timestamp_us);
+    }
     if(syn&&!st.initial_syn)st.initial_syn=tcp.sequence_number;
     if(!st.next){if(data.empty()&&!syn)return;st.next=begin;}
     if(data.empty())return;

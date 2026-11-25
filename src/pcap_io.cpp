@@ -56,19 +56,19 @@ std::vector<std::string> list_interfaces(){std::vector<std::string> out;
 #endif
  return out;
 }
-bool capture_live(const std::string& name,bool promiscuous,const PacketHandler& handler,volatile std::sig_atomic_t& stop,std::string& error){
+bool capture_live(const std::string& name,bool promiscuous,const PacketHandler& handler,const StopPredicate& should_stop,std::string& error){
 #ifdef __linux__
  const unsigned idx=if_nametoindex(name.c_str());if(idx==0U){error="unknown network interface: "+name;return false;}
  const int fd=socket(AF_PACKET,SOCK_RAW,htons(ETH_P_ALL));if(fd<0){error="could not open raw packet socket (try running with CAP_NET_RAW or sudo)";return false;}
  timeval timeout{0,250000};(void)setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));sockaddr_ll addr{};addr.sll_family=AF_PACKET;addr.sll_protocol=htons(ETH_P_ALL);addr.sll_ifindex=static_cast<int>(idx);
  if(bind(fd,reinterpret_cast<sockaddr*>(&addr),sizeof(addr))<0){error="could not bind raw socket to interface";close(fd);return false;}
  packet_mreq mr{};if(promiscuous){mr.mr_ifindex=static_cast<int>(idx);mr.mr_type=PACKET_MR_PROMISC;if(setsockopt(fd,SOL_PACKET,PACKET_ADD_MEMBERSHIP,&mr,sizeof(mr))<0){error="could not enable promiscuous mode";close(fd);return false;}}
- std::vector<std::uint8_t> buf(262144);while(stop==0){const auto n=recv(fd,buf.data(),buf.size(),0);if(n<0){if(errno==EAGAIN||errno==EWOULDBLOCK||errno==EINTR)continue;error="raw packet receive failed";close(fd);return false;}CapturedPacket p;auto now=std::chrono::system_clock::now().time_since_epoch();p.timestamp_us=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(now).count());p.wire_length=static_cast<std::uint32_t>(n);p.bytes.assign(buf.begin(),buf.begin()+n);if(!handler(p))break;}
+ std::vector<std::uint8_t> buf(262144);while(!should_stop()){const auto n=recv(fd,buf.data(),buf.size(),0);if(n<0){if(errno==EAGAIN||errno==EWOULDBLOCK||errno==EINTR)continue;error="raw packet receive failed";close(fd);return false;}CapturedPacket p;auto now=std::chrono::system_clock::now().time_since_epoch();p.timestamp_us=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(now).count());p.wire_length=static_cast<std::uint32_t>(n);p.bytes.assign(buf.begin(),buf.begin()+n);if(!handler(p))break;}
  if(promiscuous) { (void)setsockopt(fd,SOL_PACKET,PACKET_DROP_MEMBERSHIP,&mr,sizeof(mr)); }
  close(fd);
  return true;
 #else
- (void)name;(void)promiscuous;(void)handler;(void)stop;error="live capture is currently supported on Linux only";return false;
+ (void)name;(void)promiscuous;(void)handler;(void)should_stop;error="live capture is currently supported on Linux only";return false;
 #endif
 }
 }
