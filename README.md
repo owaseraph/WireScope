@@ -177,9 +177,9 @@ The original local `tcp-test.pcap` and `ipv6-loopback.pcap` referenced in the de
 
 ## Current limitations (not implemented)
 
-- The built-in offline reader supports classic PCAP with Ethernet link type (`DLT_EN10MB`) only. PCAPNG and other datalinks are unsupported.
-- `CapturedPacket` does not carry explicit datalink metadata; current capture and analysis assume Ethernet frames.
-- Live capture is Linux-specific and uses `AF_PACKET` raw sockets.
+- The offline reader preserves classic PCAP link types; Ethernet is the only decoded PCAP type. Other types are retained and marked unsupported. PCAPNG remains unsupported.
+- `CapturedPacket` carries a distinct PCAP link type or Linux hardware type, plus Linux `sll_protocol` separately. Linux live capture obtains both from `sockaddr_ll`; the namespaces are not interchangeable.
+- Live capture is Linux-specific and uses `AF_PACKET` raw sockets. Unsupported hardware types are reported and are never passed to the Ethernet decoder.
 - Radiotap parsing, IEEE 802.11 decoding, and Wi-Fi monitor-mode capture are not implemented.
 - The built-in reader rejects capture records larger than 64 MiB.
 - The CLI's built-in no-libpcap filter grammar does not implement parentheses, `or`, CIDR networks, or arbitrary BPF primitives. Live capture filtering is evaluated in user space.

@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include <variant>
+#include "wirescope/link_type.hpp"
 
 namespace wirescope {
 
@@ -92,6 +93,8 @@ struct PacketSummary {
     std::span<const std::uint8_t> frame,
     std::size_t wire_length
 );
+[[nodiscard]] PacketSummary decode_packet(LinkType link_type, std::span<const std::uint8_t> bytes,
+                                           std::size_t wire_length);
 [[nodiscard]] std::string format_mac(std::span<const std::uint8_t, 6> address);
 [[nodiscard]] std::string format_ipv4(std::span<const std::uint8_t, 4> address);
 [[nodiscard]] std::string format_ipv6(std::span<const std::uint8_t, 16> address);

@@ -38,7 +38,7 @@ Qt is optional. If `qt6-base` is installed, CMake should configure `wirescope-gu
 
 ## 3. Current automated test targets
 
-CMake currently registers six CTest executables:
+CMake currently registers seven CTest executables:
 
 | Test | Responsibility |
 |---|---|
@@ -48,6 +48,7 @@ CMake currently registers six CTest executables:
 | `dns_tests` | DNS parser behavior |
 | `tls_tests` | TLS ClientHello parser behavior |
 | `analysis_engine_tests` | End-to-end ingestion using bundled captures and display-filter checks |
+| `pcap_io_tests` | Classic PCAP link-type preservation |
 
 Other test source files may exist in `tests/`, but files not referenced by the CMake test setup are not built or run by the standard CTest commands above. There is currently no automated GUI test target. GUI verification is covered by the manual checklist below.
 
@@ -120,6 +121,8 @@ With Qt 6 Widgets installed and `wirescope-gui` built:
 Live capture permission checks must be performed by the developer. Do not add automatic privilege escalation to the test suite.
 
 Current implementation note: capture reads run in a worker thread, but packet ingestion, decoding, and analysis run on the GUI thread when delivered packets are handled. The live-capture checklist is a manual responsiveness check; it does not imply that all packet processing is off-thread.
+
+The analysis-engine tests also cover Ethernet routing and safe retention of unsupported link types. These checks are synthetic and require no capture privileges.
 
 ## 7. Planned wireless test requirements (not implemented)
 

@@ -595,4 +595,19 @@ PacketSummary decode_ethernet(
     return result;
 }
 
+PacketSummary decode_packet(LinkType link_type, std::span<const std::uint8_t> bytes,
+                            std::size_t wire_length) {
+    if (is_ethernet(link_type)) return decode_ethernet(bytes, wire_length);
+    PacketSummary summary;
+    summary.captured_length = bytes.size();
+    summary.wire_length = wire_length;
+    if (const auto* pcap = std::get_if<PcapLinkType>(&link_type.framing)) {
+        summary.parse_error = "unsupported PCAP link type " + std::to_string(pcap->value);
+    } else {
+        const auto hardware = std::get<LinuxHardwareType>(link_type.framing);
+        summary.parse_error = "unsupported Linux hardware type " + std::to_string(hardware.value);
+    }
+    return summary;
+}
+
 } // namespace wirescope

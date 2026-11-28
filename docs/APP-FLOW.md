@@ -59,7 +59,7 @@ Protocol tree   Hex/ASCII    Application metadata
 
 ### Capture controls
 
-- Open classic Ethernet PCAP through a file dialog.
+- Open classic PCAP through a file dialog. Ethernet frames are decoded; unsupported link types remain visible with an explicit decode message.
 - Select a listed Linux network interface.
 - Toggle promiscuous capture where supported.
 - Start and stop live capture.
@@ -157,7 +157,7 @@ The UI must handle these states explicitly:
 
 - No capture loaded: show a useful empty state and available actions.
 - Empty capture: show zero packets without errors.
-- Unsupported PCAP datalink or format: explain what is unsupported.
+- Unsupported PCAP datalink: retain packets and explain the numeric link type that is not decoded. Unsupported PCAP format: explain what is unsupported.
 - Interface disappeared or is unavailable: show the capture error and allow refresh/retry.
 - Permission denied: explain that live packet capture requires the appropriate Linux capability/privilege; do not automatically relaunch with elevated privileges.
 - Invalid display filter: show the parser error without clearing the packet list.

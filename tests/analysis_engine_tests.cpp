@@ -84,6 +84,49 @@ void test_display_filter() {
     assert(!error.empty());
 }
 
+void test_link_type_routing() {
+    wirescope::AnalysisEngine ethernet_engine;
+    wirescope::CapturedPacket ethernet;
+    ethernet.link_type = wirescope::pcap_link_type(wirescope::ethernet_pcap_link_type.value);
+    ethernet.bytes.resize(14U);
+    ethernet.wire_length = 14U;
+    assert(ethernet_engine.ingest(ethernet));
+    assert(ethernet_engine.packets().front().captured.link_type == ethernet.link_type);
+    assert(!ethernet_engine.packets().front().decoded.source_mac.empty());
+
+    wirescope::AnalysisEngine unsupported_engine;
+    wirescope::CapturedPacket unsupported;
+    unsupported.link_type = wirescope::pcap_link_type(127U);
+    unsupported.bytes = {0xffU, 0xffU, 0xffU, 0xffU};
+    unsupported.wire_length = 4U;
+    assert(unsupported_engine.ingest(unsupported));
+    const auto& record = unsupported_engine.packets().front();
+    const auto* pcap_type = std::get_if<wirescope::PcapLinkType>(&record.captured.link_type.framing);
+    assert(pcap_type != nullptr && pcap_type->value == 127U);
+    assert(record.decoded.parse_error == "unsupported PCAP link type 127");
+    assert(record.decoded.source_mac.empty());
+    assert(!record.decoded.ipv4 && !record.decoded.ipv6);
+
+    wirescope::AnalysisEngine linux_engine;
+    wirescope::CapturedPacket linux_ethernet;
+    linux_ethernet.link_type = wirescope::linux_link_type(wirescope::linux_ethernet_hardware_type.value,
+                                                           0x0800U);
+    linux_ethernet.bytes.resize(14U);
+    linux_ethernet.wire_length = 14U;
+    assert(linux_engine.ingest(linux_ethernet));
+    assert(linux_engine.packets().front().captured.link_type.linux_protocol.value == 0x0800U);
+    assert(linux_engine.packets().front().decoded.source_mac != "");
+
+    wirescope::AnalysisEngine unknown_linux_engine;
+    wirescope::CapturedPacket unknown_linux;
+    unknown_linux.link_type = wirescope::linux_link_type(801U, 0x0800U);
+    unknown_linux.bytes.resize(14U);
+    unknown_linux.wire_length = 14U;
+    assert(unknown_linux_engine.ingest(unknown_linux));
+    assert(unknown_linux_engine.packets().front().decoded.parse_error ==
+           "unsupported Linux hardware type 801");
+}
+
 } // namespace
 
 int main() {
@@ -91,5 +134,6 @@ int main() {
     test_http_capture();
     test_tls_capture();
     test_display_filter();
+    test_link_type_routing();
     std::cout << "Analysis engine tests passed.\n";
 }

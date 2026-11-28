@@ -112,7 +112,7 @@ bool AnalysisEngine::ingest(CapturedPacket packet) {
     try {
         PacketRecord record;
         record.number = next_packet_number_++;
-        record.decoded = decode_ethernet(packet.bytes, packet.wire_length);
+        record.decoded = decode_packet(packet.link_type, packet.bytes, packet.wire_length);
         record.captured = std::move(packet);
         record.protocol = packet_protocol_name(record.decoded);
         record.info = packet_info_string(record.decoded);

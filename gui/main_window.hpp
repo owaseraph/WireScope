@@ -37,7 +37,9 @@ private:
     void stopCapture();
     void refreshInterfaces();
     void applyDisplayFilter();
-    void handlePacket(const QByteArray& bytes, quint64 timestampUs, quint32 wireLength);
+    void handlePacket(const QByteArray& bytes, quint64 timestampUs, quint32 wireLength,
+                      quint32 linkTypeValue, quint8 linkTypeNamespace,
+                      quint16 linuxPacketProtocol);
     void handleCaptureFinished(const QString& errorMessage);
     void handleWorkerStopped();
     void showPacket(int row);

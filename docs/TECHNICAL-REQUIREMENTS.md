@@ -53,9 +53,10 @@ CLI frontend (src/main.cpp)       Qt GUI frontend (gui/)
 
 ### Capture and packet decoding
 
-- Read classic PCAP files with Ethernet link type.
+- Read classic PCAP files and preserve the global link type on every captured packet.
+- Decode Ethernet PCAP and Linux Ethernet live frames; retain unsupported link types with an explicit decode error.
 - Support little-endian and big-endian PCAP and microsecond/nanosecond timestamps.
-- On Linux, capture from a selected interface through `AF_PACKET` raw sockets.
+- On Linux, capture from a selected interface through `AF_PACKET` raw sockets and preserve the per-packet Linux hardware type reported by `sockaddr_ll`.
 - Enumerate interfaces and optionally request promiscuous mode.
 - Decode Ethernet II, stacked 802.1Q/802.1ad VLAN tags, IPv4, IPv6, supported IPv6 extension headers, TCP and UDP.
 - Retain captured bytes and decoded metadata for GUI inspection.
@@ -142,8 +143,8 @@ Live capture needs suitable privileges, normally `CAP_NET_RAW` or root. Never ch
 
 ## 6. Known limitations / explicit non-goals for the current release
 
-- Built-in offline capture reader supports classic PCAP with Ethernet link type only; PCAPNG and other datalinks are unsupported.
-- `CapturedPacket` does not carry explicit datalink metadata, and current capture and analysis assume Ethernet frames.
+- Classic PCAP link types are preserved, but Ethernet is the only decoded link type; PCAPNG is unsupported.
+- `CapturedPacket` carries a PCAP link type or Linux hardware type as distinct alternatives, plus Linux `sll_protocol` separately. These identifiers are not interchangeable. Unsupported hardware types are retained but not decoded.
 - Live capture is Linux-specific through `AF_PACKET`.
 - The built-in no-libpcap filter parser does not implement arbitrary BPF, parentheses or OR expressions.
 - IP fragment reassembly is not implemented; fragmented transport datagrams are skipped by application analysis.
@@ -160,14 +161,13 @@ Live capture needs suitable privileges, normally `CAP_NET_RAW` or root. Never ch
 
 Planned requirements for a future wireless milestone (not currently implemented):
 
-1. Represent the capture datalink explicitly instead of assuming Ethernet everywhere.
-2. Preserve Ethernet and PCAP behavior without regression.
-3. Add bounded Radiotap header parsing, including present-bit/field alignment handling.
-4. Add IEEE 802.11 frame-control parsing and management/control/data classification.
-5. Parse available metadata such as BSSID, transmitter/receiver addresses, SSID information elements, frequency/channel and signal strength when present.
-6. Initially use an already configured monitor interface. Do not automatically change interface mode or channel.
-7. Route raw wireless frames to the 802.11 decoder, never to the Ethernet decoder.
-8. Add synthetic parser tests and sample fixtures that do not require Wi-Fi hardware, root privileges or access points.
-9. Surface wireless fields in the GUI and statistics without breaking Ethernet packet views.
+1. Preserve Ethernet and PCAP behavior without regression.
+2. Add bounded Radiotap header parsing, including present-bit/field alignment handling.
+3. Add IEEE 802.11 frame-control parsing and management/control/data classification.
+4. Parse available metadata such as BSSID, transmitter/receiver addresses, SSID information elements, frequency/channel and signal strength when present.
+5. Initially use an already configured monitor interface. Do not automatically change interface mode or channel.
+6. Route raw wireless frames to the 802.11 decoder, never to the Ethernet decoder.
+7. Add synthetic parser tests and sample fixtures that do not require Wi-Fi hardware, root privileges or access points.
+8. Surface wireless fields in the GUI and statistics without breaking Ethernet packet views.
 
 Detailed delivery phases are in `IMPLEMENTATION.md`.

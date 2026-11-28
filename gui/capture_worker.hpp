@@ -17,7 +17,9 @@ public:
     void requestStop() noexcept;
 
 signals:
-    void packetCaptured(QByteArray bytes, quint64 timestampUs, quint32 wireLength);
+    void packetCaptured(QByteArray bytes, quint64 timestampUs, quint32 wireLength,
+                        quint32 linkTypeValue, quint8 linkTypeNamespace,
+                        quint16 linuxPacketProtocol);
     void captureCompleted(QString errorMessage);
 
 protected:

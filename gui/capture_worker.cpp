@@ -23,7 +23,12 @@ void CaptureWorker::run() {
             size
         );
         emit packetCaptured(bytes, static_cast<quint64>(packet.timestamp_us),
-                            static_cast<quint32>(packet.wire_length));
+                            static_cast<quint32>(packet.wire_length),
+                            std::holds_alternative<wirescope::PcapLinkType>(packet.link_type.framing)
+                                ? std::get<wirescope::PcapLinkType>(packet.link_type.framing).value
+                                : std::get<wirescope::LinuxHardwareType>(packet.link_type.framing).value,
+                            static_cast<quint8>(std::holds_alternative<wirescope::PcapLinkType>(packet.link_type.framing)
+                                ? 0U : 1U), packet.link_type.linux_protocol.value);
         return !stop_requested_.load(std::memory_order_relaxed);
     };
 

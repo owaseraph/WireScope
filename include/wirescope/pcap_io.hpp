@@ -4,8 +4,9 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include "wirescope/link_type.hpp"
 namespace wirescope {
-struct CapturedPacket {std::uint64_t timestamp_us{};std::uint32_t wire_length{};std::vector<std::uint8_t> bytes;};
+struct CapturedPacket {std::uint64_t timestamp_us{};std::uint32_t wire_length{};std::vector<std::uint8_t> bytes;LinkType link_type{PcapLinkType{ethernet_pcap_link_type}};};
 using PacketHandler=std::function<bool(const CapturedPacket&)>;
 using StopPredicate=std::function<bool()>;
 [[nodiscard]] bool read_pcap_file(const std::string&,const PacketHandler&,std::string& error);

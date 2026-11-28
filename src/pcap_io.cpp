@@ -33,7 +33,7 @@ bool read_pcap_file(const std::string& path,const PacketHandler& handler,std::st
  else if(m==std::array<std::uint8_t,4>{0xa1,0xb2,0x3c,0x4d}){le=false;nano=true;}
  else{error="unsupported PCAP magic (PCAPNG is not supported by the built-in reader)";return false;}
  if(rd16(g.data()+4,le)!=2||rd16(g.data()+6,le)!=4){error="unsupported PCAP version";return false;}
- const auto snap=rd32(g.data()+16,le);const auto link=rd32(g.data()+20,le);if(link!=1U){error="unsupported PCAP link type; Ethernet is required";return false;}if(snap==0U||snap>64U*1024U*1024U){error="invalid PCAP snapshot length";return false;}
+ const auto snap=rd32(g.data()+16,le);const auto link=rd32(g.data()+20,le);if(snap==0U||snap>64U*1024U*1024U){error="invalid PCAP snapshot length";return false;}
  std::array<std::uint8_t,16> h{};
  while(true){
    f.read(reinterpret_cast<char*>(h.data()),static_cast<std::streamsize>(h.size()));
@@ -44,7 +44,7 @@ bool read_pcap_file(const std::string& path,const PacketHandler& handler,std::st
    const std::uint32_t fraction_limit=nano?1000000000U:1000000U;
    if(frac>=fraction_limit){error="invalid PCAP timestamp fraction";return false;}
    if(incl>snap||incl>64U*1024U*1024U||orig<incl){error="PCAP packet length exceeds its declared bounds";return false;}
-   CapturedPacket p;p.timestamp_us=std::uint64_t(sec)*1000000U+(nano?frac/1000U:frac);p.wire_length=orig;p.bytes.resize(incl);
+   CapturedPacket p;p.timestamp_us=std::uint64_t(sec)*1000000U+(nano?frac/1000U:frac);p.wire_length=orig;p.link_type=pcap_link_type(link);p.bytes.resize(incl);
    if(incl&&!f.read(reinterpret_cast<char*>(p.bytes.data()),static_cast<std::streamsize>(incl))){error="truncated PCAP packet data";return false;}
    if(!handler(p))return true;
  }
@@ -63,7 +63,7 @@ bool capture_live(const std::string& name,bool promiscuous,const PacketHandler& 
  timeval timeout{0,250000};(void)setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));sockaddr_ll addr{};addr.sll_family=AF_PACKET;addr.sll_protocol=htons(ETH_P_ALL);addr.sll_ifindex=static_cast<int>(idx);
  if(bind(fd,reinterpret_cast<sockaddr*>(&addr),sizeof(addr))<0){error="could not bind raw socket to interface";close(fd);return false;}
  packet_mreq mr{};if(promiscuous){mr.mr_ifindex=static_cast<int>(idx);mr.mr_type=PACKET_MR_PROMISC;if(setsockopt(fd,SOL_PACKET,PACKET_ADD_MEMBERSHIP,&mr,sizeof(mr))<0){error="could not enable promiscuous mode";close(fd);return false;}}
- std::vector<std::uint8_t> buf(262144);while(!should_stop()){const auto n=recv(fd,buf.data(),buf.size(),0);if(n<0){if(errno==EAGAIN||errno==EWOULDBLOCK||errno==EINTR)continue;error="raw packet receive failed";close(fd);return false;}CapturedPacket p;auto now=std::chrono::system_clock::now().time_since_epoch();p.timestamp_us=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(now).count());p.wire_length=static_cast<std::uint32_t>(n);p.bytes.assign(buf.begin(),buf.begin()+n);if(!handler(p))break;}
+ std::vector<std::uint8_t> buf(262144);while(!should_stop()){sockaddr_ll packet_address{};socklen_t address_length=sizeof(packet_address);const auto n=recvfrom(fd,buf.data(),buf.size(),0,reinterpret_cast<sockaddr*>(&packet_address),&address_length);if(n<0){if(errno==EAGAIN||errno==EWOULDBLOCK||errno==EINTR)continue;error="raw packet receive failed";close(fd);return false;}if(address_length<sizeof(sockaddr_ll)||packet_address.sll_family!=AF_PACKET){error="raw packet receive returned invalid Linux link metadata";close(fd);return false;}CapturedPacket p;auto now=std::chrono::system_clock::now().time_since_epoch();p.timestamp_us=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(now).count());p.wire_length=static_cast<std::uint32_t>(n);p.link_type=linux_link_type(packet_address.sll_hatype,ntohs(packet_address.sll_protocol));p.bytes.assign(buf.begin(),buf.begin()+n);if(!handler(p))break;}
  if(promiscuous) { (void)setsockopt(fd,SOL_PACKET,PACKET_DROP_MEMBERSHIP,&mr,sizeof(mr)); }
  close(fd);
  return true;

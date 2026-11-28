@@ -348,8 +348,8 @@ void MainWindow::openCapture() {
     hex_view_->clear();
     refreshAnalysisViews();
     worker_ = new CaptureWorker(CaptureWorker::Mode::OfflineFile, path.toStdString(), false, this);
-    connect(worker_, &CaptureWorker::packetCaptured, this, [this](const QByteArray& bytes, quint64 timestamp, quint32 wireLength) {
-        handlePacket(bytes, timestamp, wireLength);
+    connect(worker_, &CaptureWorker::packetCaptured, this, [this](const QByteArray& bytes, quint64 timestamp, quint32 wireLength, quint32 linkTypeValue, quint8 linkTypeNamespace, quint16 linuxPacketProtocol) {
+        handlePacket(bytes, timestamp, wireLength, linkTypeValue, linkTypeNamespace, linuxPacketProtocol);
     });
     connect(worker_, &CaptureWorker::captureCompleted, this, [this](const QString& error) {
         handleCaptureFinished(error);
@@ -375,8 +375,8 @@ void MainWindow::startLiveCapture() {
     refreshAnalysisViews();
     worker_ = new CaptureWorker(CaptureWorker::Mode::LiveInterface,
                                 interface_name.toStdString(), promiscuous_check_->isChecked(), this);
-    connect(worker_, &CaptureWorker::packetCaptured, this, [this](const QByteArray& bytes, quint64 timestamp, quint32 wireLength) {
-        handlePacket(bytes, timestamp, wireLength);
+    connect(worker_, &CaptureWorker::packetCaptured, this, [this](const QByteArray& bytes, quint64 timestamp, quint32 wireLength, quint32 linkTypeValue, quint8 linkTypeNamespace, quint16 linuxPacketProtocol) {
+        handlePacket(bytes, timestamp, wireLength, linkTypeValue, linkTypeNamespace, linuxPacketProtocol);
     });
     connect(worker_, &CaptureWorker::captureCompleted, this, [this](const QString& error) {
         handleCaptureFinished(error);
@@ -417,10 +417,20 @@ void MainWindow::applyDisplayFilter() {
     else { packet_details_->clear(); hex_view_->clear(); }
 }
 
-void MainWindow::handlePacket(const QByteArray& bytes, quint64 timestampUs, quint32 wireLength) {
+void MainWindow::handlePacket(const QByteArray& bytes, quint64 timestampUs, quint32 wireLength,
+                              quint32 linkTypeValue, quint8 linkTypeNamespace,
+                              quint16 linuxPacketProtocol) {
     wirescope::CapturedPacket packet;
     packet.timestamp_us = static_cast<std::uint64_t>(timestampUs);
     packet.wire_length = static_cast<std::uint32_t>(wireLength);
+    if (linkTypeNamespace == 0U) {
+        packet.link_type = wirescope::pcap_link_type(linkTypeValue);
+    } else if (linkTypeNamespace == 1U && linkTypeValue <= UINT16_MAX) {
+        packet.link_type = wirescope::linux_link_type(static_cast<std::uint16_t>(linkTypeValue),
+                                                      linuxPacketProtocol);
+    } else {
+        packet.link_type = wirescope::pcap_link_type(UINT32_MAX);
+    }
     const auto* begin = reinterpret_cast<const std::uint8_t*>(bytes.constData());
     packet.bytes.assign(begin, begin + bytes.size());
     const std::size_t packet_index = engine_.packets().size();

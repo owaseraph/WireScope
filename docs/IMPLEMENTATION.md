@@ -22,7 +22,7 @@ Check the current GitHub head before starting a task; branch and commit names in
 
 ## Phase 1 — Wi-Fi capture and datalink-aware architecture
 
-**Status: Planned**  
+**Status: In progress — link-type foundation implemented; wireless decoding remains planned**
 **Suggested branch:** `feat/wifi-monitor-mode`
 
 ### Goal
@@ -31,11 +31,11 @@ Add wireless packet capture from a monitor-mode interface without breaking exist
 
 ### Work sequence
 
-1. Introduce explicit datalink metadata at capture and packet boundaries. `CapturedPacket` currently has no datalink field; do not infer link type from frame bytes.
-2. Keep separate Ethernet and wireless decoding routes. Preserve current Ethernet PCAP behavior and never pass Radiotap or raw 802.11 frames to `decode_ethernet`.
+1. ~~Introduce explicit datalink metadata at capture and packet boundaries.~~ Implemented with distinct PCAP link type, Linux hardware type, and Linux packet protocol metadata; do not infer link type from frame bytes.
+2. ~~Keep separate Ethernet and wireless decoding routes.~~ Ethernet uses the existing decoder; other types are retained and reported unsupported.
 3. Implement Radiotap parsing as a dedicated core parser, including variable present bitmaps, field alignment, bounds checks, and safe handling of unknown fields. Test it independently.
 4. Add focused IEEE 802.11 decoding: frame control and type/subtype, address roles for covered frame types, and management information elements such as SSID. Represent unavailable or ambiguous fields explicitly.
-5. Integrate datalink-aware capture and wireless metadata through shared core APIs. Resolve how the Linux live-capture source reports the actual delivered link type; do not assume `AF_PACKET` provides this from packet bytes.
+5. Integrate wireless metadata through shared core APIs. Linux live capture retains both `sockaddr_ll::sll_hatype` and `sll_protocol`; Radiotap/802.11 decoding remains future work.
 6. Add GUI presentation for wireless metadata and improve processing performance. The current GUI ingests and analyzes delivered packets on its GUI thread, so include a design for keeping high-rate capture responsive.
 7. Add deterministic synthetic parser and routing tests that need no hardware or privileges, followed by fixture-based regression checks and CLI/Qt-enabled build verification.
 8. Update documentation only to describe behavior implemented and verified. Keep implemented features, current limitations, and planned work clearly separated.
