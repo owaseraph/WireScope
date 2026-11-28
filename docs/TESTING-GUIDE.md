@@ -49,6 +49,8 @@ CMake currently registers six CTest executables:
 | `tls_tests` | TLS ClientHello parser behavior |
 | `analysis_engine_tests` | End-to-end ingestion using bundled captures and display-filter checks |
 
+Other test source files may exist in `tests/`, but files not referenced by the CMake test setup are not built or run by the standard CTest commands above. There is currently no automated GUI test target. GUI verification is covered by the manual checklist below.
+
 Run one focused test by name:
 
 ```bash
@@ -117,7 +119,9 @@ With Qt 6 Widgets installed and `wirescope-gui` built:
 
 Live capture permission checks must be performed by the developer. Do not add automatic privilege escalation to the test suite.
 
-## 7. Future wireless test requirements
+Current implementation note: capture reads run in a worker thread, but packet ingestion, decoding, and analysis run on the GUI thread when delivered packets are handled. The live-capture checklist is a manual responsiveness check; it does not imply that all packet processing is off-thread.
+
+## 7. Planned wireless test requirements (not implemented)
 
 Wireless parser tests must be handcrafted and deterministic:
 
@@ -134,6 +138,8 @@ Wireless parser tests must be handcrafted and deterministic:
 - Correct routing by datalink type (Ethernet vs Radiotap); never decode Radiotap bytes as Ethernet.
 
 These tests must not require a monitor-mode adapter, root, an access point or live radio traffic.
+
+Monitor-mode capture is planned to use an already configured monitor interface. Tests and application workflows must not automatically change interface mode or channel.
 
 ## 8. Completion criteria
 

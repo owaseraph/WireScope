@@ -2,12 +2,12 @@
 
 ## 1. Application entry points
 
-WireScope has two frontends over the shared C++ analysis engine:
+WireScope has two frontends over shared C++ packet-analysis components:
 
 - **Desktop GUI:** interactive packet inspection and live capture.
 - **CLI:** command-line offline/live analysis and report export.
 
-The GUI and CLI must not maintain separate protocol parsing implementations.
+The GUI uses `AnalysisEngine`. The CLI has its own processing context and orchestration, but reuses the shared decoder, TCP, and protocol libraries. Protocol parsing remains in shared core libraries rather than being reimplemented in either frontend.
 
 ## 2. Desktop GUI user journey
 
@@ -28,7 +28,7 @@ Read PCAP packets              Start live capture
        +-------------+---------------+
                      |
                      v
-             Shared AnalysisEngine
+             Shared AnalysisEngine (GUI)
                      |
                      v
                 Packet table
@@ -64,7 +64,7 @@ Protocol tree   Hex/ASCII    Application metadata
 - Toggle promiscuous capture where supported.
 - Start and stop live capture.
 - Display capture state and errors.
-- Keep all packet processing away from the GUI thread.
+- Capture reads run in a worker thread. Each captured packet is delivered to the GUI thread, where `AnalysisEngine` ingestion, decoding, and analysis currently run. High-rate capture can therefore affect GUI responsiveness.
 
 ### Packet table
 
@@ -141,7 +141,7 @@ Start CLI
 Apply supported packet filter
    |
    v
-Decode and analyze packets
+Decode and analyze packets using the CLI's processing context and shared core libraries
    |
    v
 Print packet/connection/protocol summaries
@@ -167,6 +167,8 @@ The UI must handle these states explicitly:
 ## 8. Planned wireless flow
 
 **Not implemented yet.** When Wi-Fi monitor support is added:
+
+The planned sequence is to add explicit datalink metadata to packet boundaries; route Ethernet and wireless frames to separate decoders; implement and independently test Radiotap parsing; add focused 802.11 frame-control, address-role, and management information-element parsing (including SSID); integrate the behavior through shared core APIs; then add GUI presentation and improve processing performance. Use deterministic synthetic tests before fixture and build verification. Update documentation only for behavior implemented and verified.
 
 ```text
 Choose an existing monitor-mode interface
@@ -196,4 +198,4 @@ Choose an existing monitor-mode interface
   Wireless details     Wireless statistics
 ```
 
-A user-created monitor interface may be selected. WireScope must not silently alter the active managed Wi-Fi interface, disconnect the user or change channels without explicit consent.
+Initially, capture only through an already configured monitor interface. WireScope must not automatically change interface mode or channel, alter the active managed Wi-Fi interface, or disconnect the user.
